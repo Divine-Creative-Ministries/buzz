@@ -58,6 +58,12 @@ pub struct RuntimeFileConfigSubset {
 /// did not already have it (`!had_*`), (b) the surface produced the field, and
 /// (c) the reader tagged it `BuzzExplicit`. A value the user set explicitly in
 /// Buzz keeps `had_* == true` and is never re-tagged.
+///
+/// The same injection + re-tag pattern applies to `thinking_effort`: the spawn
+/// path layers global env (Layer 3a) and persona env (Layer 3b) below
+/// per-record env for that key; the display path must mirror it so a globally-
+/// or persona-inherited effort value is visible in the panel with the correct
+/// provenance tag (`GlobalDefault` / `PersonaDefault`).
 fn resolve_config_surface(
     mut record: ManagedAgentRecord,
     personas: &[AgentDefinition],
@@ -87,6 +93,12 @@ fn resolve_config_surface(
 
     let provider_env_key = runtime_meta.and_then(|m| m.provider_env_var).unwrap_or("");
     let had_provider = record.env_vars.contains_key(provider_env_key);
+
+    // thinking_env_key: the runtime's env var name for effort (e.g. BUZZ_AGENT_THINKING_EFFORT).
+    // had_effort is computed before any persona-clearing above — record.env_vars is untouched
+    // by the clearing block, so an explicit per-record effort is always detected here.
+    let thinking_env_key = runtime_meta.and_then(|m| m.thinking_env_var).unwrap_or("");
+    let had_effort = !thinking_env_key.is_empty() && record.env_vars.contains_key(thinking_env_key);
 
     let (persona_prompt, persona_model, persona_provider) = resolve_effective_prompt_model_provider(
         record.persona_id.as_deref(),
@@ -168,6 +180,38 @@ fn resolve_config_surface(
         }
     }
 
+    // Inject thinking effort from persona or global where the record has none.
+    // Mirrors the spawn path (Layer 3b then 3a): persona env wins over global env.
+    // inject_persona_effort and inject_global_effort are mutually exclusive.
+    let inject_persona_effort = !had_effort
+        && !thinking_env_key.is_empty()
+        && {
+            let persona_effort = record
+                .persona_id
+                .as_deref()
+                .and_then(|pid| personas.iter().find(|p| p.id == pid))
+                .and_then(|p| p.env_vars.get(thinking_env_key).cloned());
+            if let Some(v) = persona_effort {
+                record.env_vars.insert(thinking_env_key.to_string(), v);
+                true
+            } else {
+                false
+            }
+        };
+
+    let inject_global_effort = !had_effort
+        && !inject_persona_effort
+        && !thinking_env_key.is_empty()
+        && {
+            let global_effort = global.env_vars.get(thinking_env_key).cloned();
+            if let Some(v) = global_effort {
+                record.env_vars.insert(thinking_env_key.to_string(), v);
+                true
+            } else {
+                false
+            }
+        };
+
     let mut surface = read_config_surface(
         &record,
         runtime_meta,
@@ -192,6 +236,14 @@ fn resolve_config_surface(
     }
     if inject_global_provider {
         retag_global_default(&mut surface.normalized.provider);
+    }
+
+    // Re-tag thinking effort: persona-sourced → PersonaDefault, global-sourced → GlobalDefault.
+    if inject_persona_effort {
+        retag_persona_default(&mut surface.normalized.thinking_effort);
+    }
+    if inject_global_effort {
+        retag_global_default(&mut surface.normalized.thinking_effort);
     }
 
     surface
@@ -1107,5 +1159,206 @@ mod tests {
         assert!(!super::is_safe_to_reveal("PRIVATE_KEY"));
         // Unknown key → masked by default.
         assert!(!super::is_safe_to_reveal("SOME_UNKNOWN_KEY"));
+    }
+
+    // ── thinking_effort persona/global injection tests ──────────────────────
+    //
+    // These tests cover acceptance criteria 1–3 from the effort display fix:
+    // 1. Global env BUZZ_AGENT_THINKING_EFFORT set, no record effort → origin GlobalDefault.
+    // 2. Persona env effort set, no record effort → origin PersonaDefault, shadows global.
+    // 3. Record-level effort set → unchanged BuzzExplicit, wins over both.
+    // 4. No value anywhere → thinking_effort is None.
+    //
+    // Using buzz_agent_runtime (BUZZ_AGENT_THINKING_EFFORT) since that is the
+    // runtime described in the bug report, but the logic is runtime-agnostic.
+
+    fn buzz_agent_runtime_for_effort_tests() -> &'static KnownAcpRuntime {
+        &KnownAcpRuntime {
+            id: "buzz-agent",
+            label: "Buzz Agent",
+            commands: &["buzz-agent"],
+            aliases: &[],
+            avatar_url: "",
+            mcp_command: None,
+            mcp_hooks: false,
+            underlying_cli: None,
+            cli_install_commands: &[],
+            cli_install_commands_windows: &[],
+            adapter_install_commands: &[],
+            cli_install_instructions_url: "",
+            adapter_install_instructions_url: "",
+            cli_install_hint: "",
+            adapter_install_hint: "",
+            skill_dir: None,
+            supports_acp_model_switching: true,
+            model_env_var: Some("BUZZ_AGENT_MODEL"),
+            provider_env_var: Some("BUZZ_AGENT_PROVIDER"),
+            provider_locked: false,
+            default_env: &[],
+            config_file_path: None,
+            config_file_format: None,
+            supports_acp_native_config: false,
+            thinking_env_var: Some("BUZZ_AGENT_THINKING_EFFORT"),
+            max_tokens_env_var: Some("BUZZ_AGENT_MAX_OUTPUT_TOKENS"),
+            context_limit_env_var: Some("BUZZ_AGENT_MAX_CONTEXT_TOKENS"),
+            required_normalized_fields: &["model", "provider"],
+            login_hint: None,
+            auth_probe_args: None,
+        }
+    }
+
+    fn persona_with_effort(effort: &str) -> AgentDefinition {
+        let mut p = persona_with_model("some-model");
+        p.env_vars
+            .insert("BUZZ_AGENT_THINKING_EFFORT".to_string(), effort.to_string());
+        p
+    }
+
+    fn global_with_effort(effort: &str) -> crate::managed_agents::GlobalAgentConfig {
+        let mut g = crate::managed_agents::GlobalAgentConfig::default();
+        g.env_vars
+            .insert("BUZZ_AGENT_THINKING_EFFORT".to_string(), effort.to_string());
+        g
+    }
+
+    /// AC-1: global env has effort, record has none → panel surface shows the
+    /// value with origin GlobalDefault. This mirrors the real-world case where
+    /// Will's `global-agent-config.json` has `BUZZ_AGENT_THINKING_EFFORT: "high"`
+    /// but the per-agent record env is empty.
+    #[test]
+    fn global_effort_surfaces_as_global_default_when_record_has_none() {
+        let mut record = agent_record();
+        record.persona_id = None;
+        let personas: Vec<AgentDefinition> = vec![];
+        let global = global_with_effort("high");
+
+        let surface = resolve_config_surface(
+            record,
+            &personas,
+            Some(buzz_agent_runtime_for_effort_tests()),
+            None,
+            &global,
+        );
+
+        let effort = surface
+            .normalized
+            .thinking_effort
+            .expect("effort must be surfaced when set in global env");
+        assert_eq!(effort.value.as_deref(), Some("high"));
+        assert_eq!(
+            effort.origin,
+            ConfigOrigin::GlobalDefault,
+            "effort from global env must be tagged GlobalDefault"
+        );
+    }
+
+    /// AC-2: persona env has effort, global also has effort, record has none →
+    /// persona wins and origin is PersonaDefault (persona shadows global, matching
+    /// the spawn-path Layer 3b-over-3a ordering).
+    #[test]
+    fn persona_effort_shadows_global_effort_and_tags_persona_default() {
+        let record = agent_record(); // persona_id = Some("persona-1")
+        let personas = vec![persona_with_effort("medium")];
+        let global = global_with_effort("high");
+
+        let surface = resolve_config_surface(
+            record,
+            &personas,
+            Some(buzz_agent_runtime_for_effort_tests()),
+            None,
+            &global,
+        );
+
+        let effort = surface
+            .normalized
+            .thinking_effort
+            .expect("effort must be surfaced when set in persona env");
+        assert_eq!(effort.value.as_deref(), Some("medium"));
+        assert_eq!(
+            effort.origin,
+            ConfigOrigin::PersonaDefault,
+            "effort from persona env must be tagged PersonaDefault"
+        );
+    }
+
+    /// AC-3a: record-level effort set → BuzzExplicit wins over global.
+    #[test]
+    fn record_effort_outranks_global_and_keeps_buzz_explicit_origin() {
+        let mut record = agent_record();
+        record.persona_id = None;
+        record
+            .env_vars
+            .insert("BUZZ_AGENT_THINKING_EFFORT".to_string(), "xhigh".to_string());
+        let personas: Vec<AgentDefinition> = vec![];
+        let global = global_with_effort("high");
+
+        let surface = resolve_config_surface(
+            record,
+            &personas,
+            Some(buzz_agent_runtime_for_effort_tests()),
+            None,
+            &global,
+        );
+
+        let effort = surface
+            .normalized
+            .thinking_effort
+            .expect("effort must be surfaced when set in record env");
+        assert_eq!(effort.value.as_deref(), Some("xhigh"));
+        assert_eq!(
+            effort.origin,
+            ConfigOrigin::BuzzExplicit,
+            "record-level effort must stay BuzzExplicit — never re-tagged"
+        );
+    }
+
+    /// AC-3b: record-level effort wins over persona effort and stays BuzzExplicit.
+    #[test]
+    fn record_effort_outranks_persona_effort_and_keeps_buzz_explicit_origin() {
+        let mut record = agent_record(); // persona_id = Some("persona-1")
+        record
+            .env_vars
+            .insert("BUZZ_AGENT_THINKING_EFFORT".to_string(), "xhigh".to_string());
+        let personas = vec![persona_with_effort("medium")];
+
+        let surface = resolve_config_surface(
+            record,
+            &personas,
+            Some(buzz_agent_runtime_for_effort_tests()),
+            None,
+            &crate::managed_agents::GlobalAgentConfig::default(),
+        );
+
+        let effort = surface
+            .normalized
+            .thinking_effort
+            .expect("effort must be surfaced when set in record env");
+        assert_eq!(effort.value.as_deref(), Some("xhigh"));
+        assert_eq!(
+            effort.origin,
+            ConfigOrigin::BuzzExplicit,
+            "record-level effort must stay BuzzExplicit even when persona has effort"
+        );
+    }
+
+    /// AC-4: no effort set anywhere → thinking_effort row is absent.
+    #[test]
+    fn no_effort_anywhere_yields_no_thinking_effort_field() {
+        let mut record = agent_record();
+        record.persona_id = None;
+        let personas: Vec<AgentDefinition> = vec![];
+
+        let surface = resolve_config_surface(
+            record,
+            &personas,
+            Some(buzz_agent_runtime_for_effort_tests()),
+            None,
+            &crate::managed_agents::GlobalAgentConfig::default(),
+        );
+
+        assert!(
+            surface.normalized.thinking_effort.is_none(),
+            "thinking_effort must be None when no tier has a value"
+        );
     }
 }
