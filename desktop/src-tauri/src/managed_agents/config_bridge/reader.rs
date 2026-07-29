@@ -7,11 +7,17 @@ use super::types::*;
 ///
 /// Pre-spawn (no session cache): tiers 2a (env vars / record) and 2b (config files).
 /// Post-spawn (session cache present): adds tiers 1a (ACP native) and 1b (ACP configOptions).
+///
+/// `persona_effort` / `global_effort` are slotted between ACP and config-file
+/// in `build_thinking_field` so a live ACP effort still wins over an inherited
+/// spawn baseline, displayed with the correct provenance origin.
 pub(crate) fn read_config_surface(
     record: &ManagedAgentRecord,
     runtime_meta: Option<&KnownAcpRuntime>,
     session_cache: Option<&SessionConfigCache>,
     baseline: Option<(&str, ConfigOrigin)>,
+    persona_effort: Option<&str>,
+    global_effort: Option<&str>,
 ) -> RuntimeConfigSurface {
     let is_pre_spawn = session_cache.is_none();
 
@@ -96,6 +102,8 @@ pub(crate) fn read_config_surface(
             thinking_env_var,
             is_pre_spawn,
             session_cache,
+            persona_effort,
+            global_effort,
         ),
         max_output_tokens: build_numeric_env_field(
             max_tokens_env_var,
@@ -439,10 +447,17 @@ fn build_thinking_field(
     thinking_env_var: Option<&str>,
     is_pre_spawn: bool,
     session_cache: Option<&SessionConfigCache>,
+    persona_effort: Option<&str>,
+    global_effort: Option<&str>,
 ) -> Option<NormalizedField> {
+    // Tier ordering: record env > ACP > persona > global > config file.
+    // Persona/global sit below ACP so a live session effort wins, with the
+    // inherited spawn value surfaced as the overridden secondary.
     let tiers: &[(Option<&str>, ConfigOrigin)] = &[
         (record_effort.as_deref(), ConfigOrigin::BuzzExplicit),
         (acp_effort.as_deref(), ConfigOrigin::AcpConfigOption),
+        (persona_effort, ConfigOrigin::PersonaDefault),
+        (global_effort, ConfigOrigin::GlobalDefault),
         (file_effort.as_deref(), ConfigOrigin::ConfigFile),
     ];
     let (value, origin, overridden_value, overridden_origin) = resolve_with_override(tiers)?;

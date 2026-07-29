@@ -124,7 +124,7 @@ fn test_record() -> ManagedAgentRecord {
 fn pre_spawn_surface_reports_pending_acp_tiers() {
     let record = test_record();
     let runtime = test_runtime();
-    let surface = read_config_surface(&record, Some(runtime), None, None);
+    let surface = read_config_surface(&record, Some(runtime), None, None, None, None);
 
     assert!(surface.is_pre_spawn);
     assert_eq!(surface.sources.acp_native, ConfigTierStatus::Pending);
@@ -140,7 +140,7 @@ fn surface_reports_mcp_specific_config_path() {
     let record = test_record();
     let runtime = test_runtime();
     let surface = with_goose_path_root(None, || {
-        read_config_surface(&record, Some(runtime), None, None)
+        read_config_surface(&record, Some(runtime), None, None, None, None)
     });
 
     let path = surface
@@ -159,7 +159,7 @@ fn goose_mcp_config_path_follows_path_root_override() {
     let record = test_record();
     let runtime = test_runtime();
     let surface = with_goose_path_root(Some("/tmp/buzz-goose-root"), || {
-        read_config_surface(&record, Some(runtime), None, None)
+        read_config_surface(&record, Some(runtime), None, None, None, None)
     });
 
     let expected_path = Path::new("/tmp/buzz-goose-root")
@@ -183,7 +183,7 @@ fn claude_surface_uses_mcp_config_path_not_settings_path() {
         config_file_path: Some("~/.claude/settings.json"),
         ..*test_runtime()
     };
-    let surface = read_config_surface(&record, Some(runtime), None, None);
+    let surface = read_config_surface(&record, Some(runtime), None, None, None, None);
 
     assert!(surface
         .sources
@@ -203,7 +203,7 @@ fn record_model_overrides_file_model() {
     record.model = Some("explicit-model".to_string());
     let runtime = test_runtime();
 
-    let surface = read_config_surface(&record, Some(runtime), None, None);
+    let surface = read_config_surface(&record, Some(runtime), None, None, None, None);
     let model = surface.normalized.model.unwrap();
     assert_eq!(model.value.as_deref(), Some("explicit-model"));
     assert_eq!(model.origin, ConfigOrigin::BuzzExplicit);
@@ -216,7 +216,7 @@ fn provider_locked_shows_locked() {
         provider_locked: true,
         ..*test_runtime()
     };
-    let surface = read_config_surface(&record, Some(runtime), None, None);
+    let surface = read_config_surface(&record, Some(runtime), None, None, None, None);
     let provider = surface.normalized.provider.unwrap();
     assert_eq!(provider.value.as_deref(), Some("Anthropic (locked)"));
     assert_eq!(provider.origin, ConfigOrigin::HarnessConstraint);
@@ -242,7 +242,7 @@ fn post_spawn_with_model_config_option_uses_acp() {
         captured_at: "".to_string(),
     };
 
-    let surface = read_config_surface(&record, Some(runtime), Some(&cache), None);
+    let surface = read_config_surface(&record, Some(runtime), Some(&cache), None, None, None);
     assert!(!surface.is_pre_spawn);
     let model = surface.normalized.model.unwrap();
     assert_eq!(model.value.as_deref(), Some("claude-opus-4"));
@@ -266,7 +266,7 @@ fn acp_model_overrides_file_model_with_override_tracking() {
         captured_at: "".to_string(),
     };
 
-    let surface = read_config_surface(&record, Some(runtime), Some(&cache), None);
+    let surface = read_config_surface(&record, Some(runtime), Some(&cache), None, None, None);
     let model = surface.normalized.model.unwrap();
     assert_eq!(model.value.as_deref(), Some("acp-model"));
     assert_eq!(model.origin, ConfigOrigin::AcpConfigOption);
@@ -293,7 +293,7 @@ fn persona_model_injection_produces_persona_default_origin() {
     record.model = Some("persona-model".to_string());
     let runtime = test_runtime();
 
-    let mut surface = read_config_surface(&record, Some(runtime), None, None);
+    let mut surface = read_config_surface(&record, Some(runtime), None, None, None, None);
 
     // Reader sees injected model as BuzzExplicit.
     let model = surface.normalized.model.as_ref().unwrap();
@@ -340,6 +340,8 @@ fn runtime_override_wins_display_when_model_overridden_is_true() {
         Some(runtime),
         Some(&cache),
         Some(("persona-model", ConfigOrigin::PersonaDefault)),
+        None,
+        None,
     );
     let model = surface.normalized.model.unwrap();
 
@@ -374,6 +376,8 @@ fn no_runtime_override_when_model_overridden_is_false() {
         Some(runtime),
         Some(&cache),
         Some(("persona-model", ConfigOrigin::PersonaDefault)),
+        None,
+        None,
     );
     let model = surface.normalized.model.unwrap();
 
@@ -408,6 +412,8 @@ fn no_false_positive_override_when_persona_edited_mid_life() {
         Some(runtime),
         Some(&cache),
         Some(("new-persona-model", ConfigOrigin::PersonaDefault)),
+        None,
+        None,
     );
     let model = surface.normalized.model.unwrap();
 
@@ -429,7 +435,7 @@ fn persona_provider_injection_produces_persona_default_origin() {
         .insert("GOOSE_PROVIDER".to_string(), "anthropic".to_string());
     let runtime = test_runtime();
 
-    let mut surface = read_config_surface(&record, Some(runtime), None, None);
+    let mut surface = read_config_surface(&record, Some(runtime), None, None, None, None);
 
     // Reader sees injected provider as BuzzExplicit.
     let provider = surface.normalized.provider.as_ref().unwrap();
@@ -459,7 +465,7 @@ fn persona_system_prompt_injection_produces_persona_default_origin() {
     );
     let runtime = test_runtime();
 
-    let mut surface = read_config_surface(&record, Some(runtime), None, None);
+    let mut surface = read_config_surface(&record, Some(runtime), None, None, None, None);
 
     // Reader sees injected prompt as BuzzExplicit.
     let prompt = surface.normalized.system_prompt.as_ref().unwrap();
@@ -520,7 +526,7 @@ fn explicit_record_model_not_retagged_when_already_present() {
     record.model = Some("explicit-model".to_string());
     let runtime = test_runtime();
 
-    let surface = read_config_surface(&record, Some(runtime), None, None);
+    let surface = read_config_surface(&record, Some(runtime), None, None, None, None);
 
     // had_model == true, so no re-tagging occurs. Origin stays BuzzExplicit.
     let model = surface.normalized.model.unwrap();
@@ -544,7 +550,7 @@ fn extra_env_vars_appear_in_advanced_as_buzz_explicit() {
         .insert("SPROUT_ACP_MEMORY".to_string(), "mem-value".to_string());
     let runtime = test_runtime();
 
-    let surface = read_config_surface(&record, Some(runtime), None, None);
+    let surface = read_config_surface(&record, Some(runtime), None, None, None, None);
 
     let advanced_keys: Vec<&str> = surface.advanced.iter().map(|f| f.key.as_str()).collect();
     assert!(
@@ -589,7 +595,7 @@ fn extra_env_var_skipped_when_already_in_file_config_extra() {
         .insert("GOOSE_THINKING_EFFORT".to_string(), "high".to_string());
     let runtime = test_runtime();
 
-    let surface = read_config_surface(&record, Some(runtime), None, None);
+    let surface = read_config_surface(&record, Some(runtime), None, None, None, None);
 
     let advanced_keys: Vec<&str> = surface.advanced.iter().map(|f| f.key.as_str()).collect();
     assert!(
@@ -649,7 +655,7 @@ fn buzz_agent_max_output_tokens_from_env_is_buzz_explicit() {
     );
     let runtime = buzz_agent_runtime();
 
-    let surface = read_config_surface(&record, Some(runtime), None, None);
+    let surface = read_config_surface(&record, Some(runtime), None, None, None, None);
 
     let field = surface.normalized.max_output_tokens.unwrap();
     assert_eq!(field.value.as_deref(), Some("8192"));
@@ -670,7 +676,7 @@ fn buzz_agent_context_limit_from_env_is_buzz_explicit() {
     );
     let runtime = buzz_agent_runtime();
 
-    let surface = read_config_surface(&record, Some(runtime), None, None);
+    let surface = read_config_surface(&record, Some(runtime), None, None, None, None);
 
     let field = surface.normalized.context_limit.unwrap();
     assert_eq!(field.value.as_deref(), Some("100000"));
@@ -688,7 +694,7 @@ fn buzz_agent_max_tokens_absent_when_no_env_var_or_file() {
     let record = test_record();
     let runtime = buzz_agent_runtime();
 
-    let surface = read_config_surface(&record, Some(runtime), None, None);
+    let surface = read_config_surface(&record, Some(runtime), None, None, None, None);
 
     assert!(
         surface.normalized.max_output_tokens.is_none(),
@@ -713,7 +719,7 @@ fn buzz_agent_max_tokens_env_var_not_double_surfaced_in_advanced() {
     );
     let runtime = buzz_agent_runtime();
 
-    let surface = read_config_surface(&record, Some(runtime), None, None);
+    let surface = read_config_surface(&record, Some(runtime), None, None, None, None);
 
     let advanced_keys: Vec<&str> = surface.advanced.iter().map(|f| f.key.as_str()).collect();
     assert!(
@@ -734,7 +740,7 @@ fn buzz_agent_thinking_effort_from_env_is_buzz_explicit() {
         .insert("BUZZ_AGENT_THINKING_EFFORT".to_string(), "high".to_string());
     let runtime = buzz_agent_runtime();
 
-    let surface = read_config_surface(&record, Some(runtime), None, None);
+    let surface = read_config_surface(&record, Some(runtime), None, None, None, None);
 
     let field = surface.normalized.thinking_effort.unwrap();
     assert_eq!(field.value.as_deref(), Some("high"));
@@ -755,7 +761,7 @@ fn buzz_agent_thinking_effort_env_var_not_double_surfaced_in_advanced() {
     );
     let runtime = buzz_agent_runtime();
 
-    let surface = read_config_surface(&record, Some(runtime), None, None);
+    let surface = read_config_surface(&record, Some(runtime), None, None, None, None);
 
     let advanced_keys: Vec<&str> = surface.advanced.iter().map(|f| f.key.as_str()).collect();
     assert!(
@@ -777,4 +783,170 @@ fn missing_required_provider_still_returns_dropdown_field() {
 #[test]
 fn missing_optional_provider_stays_hidden() {
     assert!(build_provider_field(&None, &None, Some("GOOSE_PROVIDER"), false, false).is_none());
+}
+
+// ── thinking_effort persona/global tier tests ─────────────────────────────
+//
+// The new tiers in build_thinking_field: record > ACP > persona > global > file.
+// Tests exercise all acceptance criteria and the conflicting-ACP case.
+
+fn buzz_agent_rt() -> &'static KnownAcpRuntime {
+    crate::managed_agents::discovery::known_acp_runtime_exact("buzz-agent")
+        .expect("buzz-agent must be in catalog")
+}
+
+fn persona_with_effort(id: &str, effort: &str) -> crate::managed_agents::types::AgentDefinition {
+    let mut p = crate::managed_agents::types::AgentDefinition {
+        id: id.to_string(),
+        display_name: "Test persona".to_string(),
+        avatar_url: None,
+        system_prompt: "".to_string(),
+        runtime: None,
+        model: None,
+        provider: None,
+        name_pool: Vec::new(),
+        is_builtin: false,
+        is_active: true,
+        shared: false,
+        catalog_source: None,
+        source_team: None,
+        source_team_persona_slug: None,
+        env_vars: BTreeMap::new(),
+        respond_to: None,
+        respond_to_allowlist: Vec::new(),
+        parallelism: None,
+        created_at: "".to_string(),
+        updated_at: "".to_string(),
+    };
+    p.env_vars
+        .insert("BUZZ_AGENT_THINKING_EFFORT".to_string(), effort.to_string());
+    p
+}
+
+/// AC-1: no record effort, global env has effort → GlobalDefault.
+/// Real-world case: Will's global-agent-config.json has BUZZ_AGENT_THINKING_EFFORT=high,
+/// per-agent record has no env_vars → effort must surface with GlobalDefault origin.
+#[test]
+fn global_effort_surfaces_as_global_default_when_record_has_none() {
+    let record = test_record();
+    let runtime = buzz_agent_rt();
+
+    let surface = read_config_surface(&record, Some(runtime), None, None, None, Some("high"));
+
+    let effort = surface
+        .normalized
+        .thinking_effort
+        .expect("effort must surface from global tier");
+    assert_eq!(effort.value.as_deref(), Some("high"));
+    assert_eq!(effort.origin, ConfigOrigin::GlobalDefault);
+}
+
+/// AC-2: persona env has effort, global also has effort → PersonaDefault wins, shadows global.
+#[test]
+fn persona_effort_shadows_global_and_tags_persona_default() {
+    let record = test_record();
+    let runtime = buzz_agent_rt();
+
+    let surface = read_config_surface(
+        &record,
+        Some(runtime),
+        None,
+        None,
+        Some("medium"),
+        Some("high"),
+    );
+
+    let effort = surface
+        .normalized
+        .thinking_effort
+        .expect("effort must surface from persona tier");
+    assert_eq!(effort.value.as_deref(), Some("medium"));
+    assert_eq!(effort.origin, ConfigOrigin::PersonaDefault);
+    // global is the overridden baseline
+    assert_eq!(effort.overridden_value.as_deref(), Some("high"));
+    assert_eq!(effort.overridden_origin, Some(ConfigOrigin::GlobalDefault));
+}
+
+/// AC-3: record-level effort wins over persona and global, stays BuzzExplicit.
+#[test]
+fn record_effort_outranks_persona_and_global_keeps_buzz_explicit() {
+    let mut record = test_record();
+    record.env_vars.insert(
+        "BUZZ_AGENT_THINKING_EFFORT".to_string(),
+        "xhigh".to_string(),
+    );
+    let runtime = buzz_agent_rt();
+
+    let surface = read_config_surface(
+        &record,
+        Some(runtime),
+        None,
+        None,
+        Some("medium"),
+        Some("high"),
+    );
+
+    let effort = surface
+        .normalized
+        .thinking_effort
+        .expect("effort must surface from record tier");
+    assert_eq!(effort.value.as_deref(), Some("xhigh"));
+    assert_eq!(effort.origin, ConfigOrigin::BuzzExplicit);
+}
+
+/// AC-4: no effort from any tier → thinking_effort field is absent.
+#[test]
+fn no_effort_anywhere_yields_no_thinking_effort_field() {
+    let record = test_record();
+    let runtime = buzz_agent_rt();
+
+    let surface = read_config_surface(&record, Some(runtime), None, None, None, None);
+
+    assert!(
+        surface.normalized.thinking_effort.is_none(),
+        "thinking_effort must be None when no tier has a value"
+    );
+}
+
+/// AC-5 (conflicting-ACP): inherited effort set (global=high) + live ACP effort=low
+/// → ACP wins as primary (AcpConfigOption), global is the overridden secondary.
+#[test]
+fn acp_effort_wins_over_inherited_global_effort_as_secondary() {
+    let record = test_record();
+    let runtime = buzz_agent_rt();
+    let cache = SessionConfigCache {
+        config_options: vec![AcpConfigOptionEntry {
+            config_id: "effort".to_string(),
+            category: Some("effort".to_string()),
+            display_name: Some("Effort".to_string()),
+            current_value: Some("low".to_string()),
+            options: vec![],
+        }],
+        available_modes: vec![],
+        available_models: vec![],
+        current_model: None,
+        model_overridden: false,
+        goose_native_config: None,
+        captured_at: "".to_string(),
+    };
+
+    let surface = read_config_surface(
+        &record,
+        Some(runtime),
+        Some(&cache),
+        None,
+        None,
+        Some("high"),
+    );
+
+    let effort = surface
+        .normalized
+        .thinking_effort
+        .expect("effort must surface from ACP tier");
+    // Live ACP value wins.
+    assert_eq!(effort.value.as_deref(), Some("low"));
+    assert_eq!(effort.origin, ConfigOrigin::AcpConfigOption);
+    // Global is surfaced as the overridden baseline.
+    assert_eq!(effort.overridden_value.as_deref(), Some("high"));
+    assert_eq!(effort.overridden_origin, Some(ConfigOrigin::GlobalDefault));
 }
