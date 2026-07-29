@@ -440,6 +440,7 @@ fn build_mode_field(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_thinking_field(
     record_effort: &Option<String>,
     file_effort: &Option<String>,

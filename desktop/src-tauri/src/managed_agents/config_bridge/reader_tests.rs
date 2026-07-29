@@ -795,34 +795,6 @@ fn buzz_agent_rt() -> &'static KnownAcpRuntime {
         .expect("buzz-agent must be in catalog")
 }
 
-fn persona_with_effort(id: &str, effort: &str) -> crate::managed_agents::types::AgentDefinition {
-    let mut p = crate::managed_agents::types::AgentDefinition {
-        id: id.to_string(),
-        display_name: "Test persona".to_string(),
-        avatar_url: None,
-        system_prompt: "".to_string(),
-        runtime: None,
-        model: None,
-        provider: None,
-        name_pool: Vec::new(),
-        is_builtin: false,
-        is_active: true,
-        shared: false,
-        catalog_source: None,
-        source_team: None,
-        source_team_persona_slug: None,
-        env_vars: BTreeMap::new(),
-        respond_to: None,
-        respond_to_allowlist: Vec::new(),
-        parallelism: None,
-        created_at: "".to_string(),
-        updated_at: "".to_string(),
-    };
-    p.env_vars
-        .insert("BUZZ_AGENT_THINKING_EFFORT".to_string(), effort.to_string());
-    p
-}
-
 /// AC-1: no record effort, global env has effort → GlobalDefault.
 /// Real-world case: Will's global-agent-config.json has BUZZ_AGENT_THINKING_EFFORT=high,
 /// per-agent record has no env_vars → effort must surface with GlobalDefault origin.
