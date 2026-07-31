@@ -615,8 +615,8 @@ pub fn normalize_effort_for_provider(
 /// - `None`                → pass effort through unchanged (Anthropic path)
 ///
 /// This is the production authority for DatabricksV2 effort normalization.
-/// The old `normalize_effort_for_openai_route` remains the authority for
-/// pure OpenAI and legacy Databricks providers (unchanged).
+/// `normalize_effort_for_provider` is the authority for pure OpenAI and legacy
+/// Databricks; `normalize_effort_for_openai_route` is a test/differential shim only.
 pub fn normalize_effort_for_databricks_v2(
     effort: ThinkingEffort,
     raw_model: &str,
@@ -2829,6 +2829,13 @@ mod tests {
         const GPT5_1: &[&str] = &["none", "low", "medium", "high"];
 
         let p = provider.to_ascii_lowercase();
+        // Canonicalize provider aliases — mirrors the production path and TS
+        // PROVIDER_ALIASES so this shim stays in sync with the fixture.
+        let p = match p.as_str() {
+            "openai-compat" => "openai".to_owned(),
+            "databricks-v2" => "databricks_v2".to_owned(),
+            _ => p,
+        };
         // Strip arbitrary endpoint-naming prefix before model matching, mirroring TS and
         // strip_catalog_prefix: find the first known family token (claude-, gpt-) and
         // drop everything before it. Handles any catalog naming convention.
@@ -2913,7 +2920,7 @@ mod tests {
         if p == "openrouter" {
             return (ALL_7.to_vec(), Some("medium"));
         }
-        // openai-compat, unknown, empty → all-7, default medium.
+        // Unknown/empty provider → all-7, default medium.
         (ALL_7.to_vec(), Some("medium"))
     }
 

@@ -3507,6 +3507,13 @@ mod tests {
                          provider: &str,
                          raw_model: &str,
                          hits: &mut HashSet<(&str, &str, &str)>| {
+            // Canonicalize provider aliases so both sides of the differential
+            // operate on the same provider string (mirrors production and TS).
+            let provider = match provider {
+                "openai-compat" => "openai",
+                "databricks-v2" => "databricks_v2",
+                other => other,
+            };
             let new_cap = resolve_model_capabilities(provider, raw_model);
             let (old_efforts, old_default) =
                 valid_effort_values_for_provider_model_for_test(provider, raw_model);
@@ -3973,6 +3980,114 @@ mod tests {
             inputs.len(),
             allowlist_hits.len(),
             allowlist.len(),
+        );
+    }
+
+    /// Behavioral differential for `normalize_effort_for_provider` — the production
+    /// authority for pure OpenAI and legacy Databricks effort normalization.
+    ///
+    /// This test catches a provider-generic repeat of the `305627e32` defect class:
+    /// a record-level differential passes (the generated record is correct) while the
+    /// production function diverges (delegates to the old hand table instead of the
+    /// record). The existing behavioral differential above covers `databricks_v2`; this
+    /// test covers `openai` and `databricks` routes, including the `openai-compat`
+    /// alias that the TS canonicalizer resolves to `openai` (Thufir P3 action 1).
+    ///
+    /// For every corpus entry with provider in {openai, databricks, openai-compat},
+    /// this drives `normalize_effort_for_provider(canonical_provider, model, effort)`
+    /// and `normalize_effort_for_openai_route(effort, model)` across all 7 effort
+    /// levels and asserts they agree. No allowlist is expected — these functions are
+    /// definitionally aligned and any divergence is a bug.
+    #[test]
+    fn behavioral_differential_normalize_effort_for_provider() {
+        use crate::config::{normalize_effort_for_openai_route, normalize_effort_for_provider};
+
+        const ALL_EFFORTS: &[ThinkingEffort] = &[
+            ThinkingEffort::None,
+            ThinkingEffort::Minimal,
+            ThinkingEffort::Low,
+            ThinkingEffort::Medium,
+            ThinkingEffort::High,
+            ThinkingEffort::XHigh,
+            ThinkingEffort::Max,
+        ];
+
+        #[derive(serde::Deserialize)]
+        struct CorpusEntry {
+            #[serde(rename = "_group")]
+            group: Option<String>,
+            id: Option<String>,
+            provider: Option<String>,
+            raw_model_id: Option<String>,
+        }
+
+        let corpus_json = include_str!("../../../scripts/normative-corpus.json");
+        let corpus: Vec<CorpusEntry> =
+            serde_json::from_str(corpus_json).expect("corpus must be valid JSON");
+
+        // Collect (label, canonical_provider, raw_model_id) for openai/databricks/openai-compat.
+        let mut inputs: Vec<(String, &'static str, String)> = Vec::new();
+        for e in &corpus {
+            if e.group.is_some() {
+                continue;
+            }
+            let (prov, model) = match (&e.provider, &e.raw_model_id) {
+                (Some(p), Some(m)) => (p.as_str(), m.as_str()),
+                _ => continue,
+            };
+            let canonical: &'static str = match prov {
+                "openai" | "openai-compat" => "openai",
+                "databricks" => "databricks",
+                _ => continue, // databricks_v2 and others are covered by the other differential
+            };
+            let label = format!(
+                "corpus:{} (raw_provider={})",
+                e.id.as_deref().unwrap_or(model),
+                prov
+            );
+            inputs.push((label, canonical, model.to_owned()));
+        }
+
+        assert!(
+            !inputs.is_empty(),
+            "No openai/databricks/openai-compat inputs found in normative corpus"
+        );
+
+        let mut divergences: Vec<String> = Vec::new();
+
+        for (label, canonical_provider, raw_model) in &inputs {
+            let mut per_effort: Vec<String> = Vec::new();
+            for &effort in ALL_EFFORTS {
+                let new_result =
+                    normalize_effort_for_provider(canonical_provider, raw_model, effort);
+                let old_result = normalize_effort_for_openai_route(effort, raw_model);
+                if new_result != old_result {
+                    per_effort.push(format!(
+                        "  {} → old={} new={}",
+                        effort.openai_effort_str(),
+                        old_result.openai_effort_str(),
+                        new_result.openai_effort_str()
+                    ));
+                }
+            }
+            if !per_effort.is_empty() {
+                divergences.push(format!(
+                    "BEHAVIORAL_DIVERGE normalize_effort_for_provider [{label}] model={raw_model:?} provider={canonical_provider:?}:\n{}",
+                    per_effort.join("\n")
+                ));
+            }
+        }
+
+        assert!(
+            divergences.is_empty(),
+            "behavioral_differential_normalize_effort_for_provider found {} failure(s):\n{}",
+            divergences.len(),
+            divergences.join("\n")
+        );
+
+        println!(
+            "behavioral_differential_normalize_effort_for_provider: {} openai/databricks corpus inputs probed, 0 divergences",
+            inputs.len()
         );
     }
 

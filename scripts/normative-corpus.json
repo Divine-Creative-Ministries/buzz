@@ -736,5 +736,60 @@
       ],
       "default_effort": "none"
     }
+  },
+  {
+    "_group": "openai-compat alias canonicalization (Thufir P3 corrective action 1)",
+    "_note": "Rust normalizes openai-compat \u2192 Provider::OpenAi before reaching normalize_effort_for_provider. TS PROVIDER_ALIASES must match so the UI effort table equals the Rust request behavior. Interpreters must canonicalize openai-compat \u2192 openai before resolving; the expected values are identical to the corresponding openai vectors."
+  },
+  {
+    "id": "openai-compat-gpt-5-pro",
+    "provider": "openai-compat",
+    "raw_model_id": "gpt-5-pro",
+    "_note": "openai-compat/gpt-5-pro must resolve identically to openai/gpt-5-pro: [high] only, default high.",
+    "expect": {
+      "thinking_mode": "none",
+      "supported_efforts": [
+        "high"
+      ],
+      "default_effort": "high",
+      "databricks_v2_wire_route": "not-applicable"
+    }
+  },
+  {
+    "id": "openai-compat-gpt-5-5",
+    "provider": "openai-compat",
+    "raw_model_id": "gpt-5.5",
+    "_note": "openai-compat/gpt-5.5 must resolve identically to openai/gpt-5.5: [none,low,medium,high,xhigh], default medium.",
+    "expect": {
+      "thinking_mode": "none",
+      "supported_efforts": [
+        "none",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
+      "default_effort": "medium",
+      "databricks_v2_wire_route": "not-applicable"
+    }
+  },
+  {
+    "id": "openai-compat-empty-model",
+    "provider": "openai-compat",
+    "raw_model_id": "",
+    "_note": "openai-compat with blank model: resolves identically to openai unknown \u2014 all-except-max, default medium.",
+    "expect": {
+      "thinking_mode": "none",
+      "supported_efforts": [
+        "none",
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
+      "default_effort": "medium",
+      "databricks_v2_wire_route": "not-applicable"
+    }
   }
 ]
