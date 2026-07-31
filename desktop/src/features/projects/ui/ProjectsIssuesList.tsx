@@ -12,10 +12,10 @@ import {
   resolveUserLabel,
   type UserProfileLookup,
 } from "@/features/profile/lib/identity";
-import { UserProfilePopover } from "@/features/profile/ui/UserProfilePopover";
 import { Button } from "@/shared/ui/button";
 import { Card } from "@/shared/ui/card";
 import { DropdownMenuItem } from "@/shared/ui/dropdown-menu";
+import { ProjectAuthorIdentity } from "./ProjectAuthorIdentity";
 import { ProjectEventTypeIcon } from "./ProjectEventTypeIcon";
 import { ProjectListRowMenu } from "./ProjectListRowMenu";
 import { ProjectsWorkItemsLoadNotice } from "./ProjectsWorkItemsLoadNotice";
@@ -54,11 +54,13 @@ function nextStepLabel(status: ProjectIssue["status"]) {
 }
 
 function IssueHeader({
+  authorTestId,
   includeDate = true,
   issue,
   profiles,
   project,
 }: {
+  authorTestId?: string;
   includeDate?: boolean;
   issue: ProjectIssue;
   profiles?: UserProfileLookup;
@@ -75,14 +77,12 @@ function IssueHeader({
         {project.name}
         {includeDate ? ` · created ${relativeTime(issue.createdAt)}` : null} ·
         by{" "}
-        <UserProfilePopover pubkey={issue.author} triggerElement="span">
-          <button
-            className="relative z-10 rounded-sm hover:underline focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
-            type="button"
-          >
-            {authorLabel}
-          </button>
-        </UserProfilePopover>
+        <ProjectAuthorIdentity
+          label={authorLabel}
+          profiles={profiles}
+          pubkey={issue.author}
+          testId={authorTestId}
+        />
         {includeDate ? (
           ` · ${issue.status}`
         ) : (
@@ -187,6 +187,7 @@ function IssueListRow({
       <div className={PROJECT_LIST_ROW_CONTENT_CLASS}>
         <ProjectEventTypeIcon className="h-5 w-5" kind="issue" />
         <IssueHeader
+          authorTestId="projects-issue-author"
           includeDate={false}
           issue={issue}
           profiles={profiles}

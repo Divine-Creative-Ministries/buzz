@@ -12,13 +12,10 @@ import {
   resolveUserLabel,
   type UserProfileLookup,
 } from "@/features/profile/lib/identity";
-import { UserProfilePopover } from "@/features/profile/ui/UserProfilePopover";
-import { normalizePubkey } from "@/shared/lib/pubkey";
 import { Button } from "@/shared/ui/button";
 import { Card } from "@/shared/ui/card";
 import { DropdownMenuItem } from "@/shared/ui/dropdown-menu";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/shared/ui/tooltip";
-import { UserAvatar } from "@/shared/ui/UserAvatar";
+import { ProjectAuthorIdentity } from "./ProjectAuthorIdentity";
 import { ProjectEventTypeIcon } from "./ProjectEventTypeIcon";
 import { ProjectListRowMenu } from "./ProjectListRowMenu";
 import { ProjectsWorkItemsLoadNotice } from "./ProjectsWorkItemsLoadNotice";
@@ -32,71 +29,6 @@ import {
   PROJECT_LIST_ROW_TITLE_CLASS,
   PROJECT_LIST_ROW_TRAILING_CLASS,
 } from "./projectListRowStyles";
-
-/** Compact author identity with a minimal hover summary. */
-function AuthorIdentity({
-  label,
-  profiles,
-  pubkey,
-  testId,
-}: {
-  label: string;
-  profiles?: UserProfileLookup;
-  pubkey: string;
-  testId?: string;
-}) {
-  const profile = profiles?.[normalizePubkey(pubkey)];
-  const roleLabel = profile?.isAgent === true ? "Agent" : "Person";
-
-  return (
-    <UserProfilePopover
-      enableHoverPopover={false}
-      pubkey={pubkey}
-      triggerElement="span"
-    >
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <button
-            className="relative z-10 inline-flex items-center gap-1 rounded-sm hover:underline focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
-            data-testid={testId}
-            type="button"
-          >
-            <UserAvatar
-              accent={profile?.isAgent === true}
-              avatarUrl={profile?.avatarUrl ?? null}
-              displayName={label}
-              fallbackDelayMs={0}
-              size="xs"
-              testId={testId ? `${testId}-avatar` : undefined}
-            />
-            <span data-testid={testId ? `${testId}-label` : undefined}>
-              {label}
-            </span>
-          </button>
-        </TooltipTrigger>
-        <TooltipContent
-          className="flex items-center gap-2 px-2.5 py-2"
-          data-testid="projects-pr-author-rollover"
-          side="top"
-        >
-          <UserAvatar
-            accent={profile?.isAgent === true}
-            avatarUrl={profile?.avatarUrl ?? null}
-            displayName={label}
-            fallbackDelayMs={0}
-            size="sm"
-          />
-          <span className="min-w-0">
-            <span className="block truncate font-medium">{label}</span>
-            <span className="block text-primary-foreground/70">
-              {roleLabel}
-            </span>
-          </span>
-        </TooltipContent>
-      </Tooltip>
-    </UserProfilePopover>
-  );
-}
 
 type ProjectsPullRequestsListProps = {
   error: unknown;
@@ -193,7 +125,7 @@ function PullRequestGridCard({
             <span>created {relativeTime(pullRequest.createdAt)}</span>
             <span>
               by{" "}
-              <AuthorIdentity
+              <ProjectAuthorIdentity
                 label={authorLabel}
                 profiles={profiles}
                 pubkey={pullRequest.author}
@@ -256,7 +188,7 @@ function PullRequestListRow({
             </span>
             <span className="inline-flex items-center gap-1">
               <span>by</span>
-              <AuthorIdentity
+              <ProjectAuthorIdentity
                 label={authorLabel}
                 profiles={profiles}
                 pubkey={pullRequest.author}

@@ -860,6 +860,37 @@ test("project pull request author rollover stays identity-only", async ({
   await expect(page.getByTestId("user-profile-popover")).toHaveCount(0);
 });
 
+test("project issue author rollover matches pull requests", async ({
+  page,
+}) => {
+  await enableProjectsFeature(page);
+  await installMockBridge(page);
+  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await page.getByTestId("open-projects-view").click();
+  await page.getByRole("button", { name: "Issues", exact: true }).click();
+  await page.getByRole("button", { name: "List layout" }).click();
+
+  const row = page.locator('[data-testid^="projects-issue-row-"]').first();
+  const author = row.getByTestId("projects-issue-author");
+  await expect(author).toBeVisible();
+  await expect(
+    author.locator(
+      '[data-testid="projects-issue-author-avatar-image"], [data-testid="projects-issue-author-avatar-fallback"]',
+    ),
+  ).toBeVisible();
+
+  const authorLabel = (
+    await author.getByTestId("projects-issue-author-label").innerText()
+  ).trim();
+  await author.hover();
+  const rollover = page.getByTestId("projects-issue-author-rollover");
+  await expect(rollover).toBeVisible();
+  await expect(rollover).toContainText(authorLabel);
+  await expect(rollover).toContainText(/Agent|Person/);
+  await expect(rollover).not.toContainText("Created");
+  await expect(page.getByTestId("user-profile-popover")).toHaveCount(0);
+});
+
 test("project pull requests report aggregate root query failures", async ({
   page,
 }) => {
