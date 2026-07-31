@@ -531,10 +531,15 @@ test.describe("channel activity hover preview", () => {
       "600",
     );
 
-    const remainingRow = popover.getByTestId(/^channel-activity-item-/).first();
-    await remainingRow.hover();
-    await remainingRow.getByRole("button", { name: "Mark as read" }).click();
+    await page.mouse.move(900, 680);
+    await expect(popover).toBeHidden();
+    await page.getByTestId("channel-general").click({ button: "right" });
+    await page.getByRole("menuitem", { name: "Mark as read" }).click();
     await expect(page.getByTestId("channel-unread-dot-general")).toHaveCount(0);
+    await page.getByTestId("channel-general").hover();
+    await expect(
+      page.getByTestId("channel-activity-popover-general"),
+    ).toHaveCount(0);
     await page.getByTestId("channel-random").click();
     await expect(page.getByTestId("chat-title")).toHaveText("random");
     await expect(page.getByTestId("channel-general")).not.toHaveCSS(

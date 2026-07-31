@@ -179,7 +179,17 @@ export function ChannelContextMenuItems({
   onDeleteChannel?: (channel: Channel) => void;
   onLeaveChannel?: (channel: Channel) => void;
 }) {
-  const { hasSidebarUnreadProjections, unreadThreadChannelIds } = useAppShell();
+  const {
+    feedItemState,
+    hasSidebarUnreadProjections,
+    unreadThreadChannelIds,
+    unreadThreadFeedItems,
+  } = useAppShell();
+  const channelUnreadOverrideIds = unreadThreadFeedItems.flatMap((item) =>
+    item.channelId === channel.id && feedItemState.unreadSet.has(item.id)
+      ? [item.id]
+      : [],
+  );
   const hasProjectedUnread =
     hasUnread ||
     (channel.channelType !== "dm" &&
@@ -240,9 +250,12 @@ export function ChannelContextMenuItems({
       {hasProjectedUnread && onMarkChannelRead ? (
         <ContextMenuItem
           onSelect={() =>
-            deferMenuAction(() =>
-              onMarkChannelRead(channel.id, channel.lastMessageAt),
-            )
+            deferMenuAction(() => {
+              for (const itemId of channelUnreadOverrideIds) {
+                feedItemState.undoUnread(itemId);
+              }
+              onMarkChannelRead(channel.id, channel.lastMessageAt);
+            })
           }
         >
           <ContextMenuIconSlot>
