@@ -57,6 +57,24 @@ async function readSavedRuntime(page: Parameters<typeof installMockBridge>[0]) {
   });
 }
 
+async function readGlobalConfigSetterCallCount(
+  page: Parameters<typeof installMockBridge>[0],
+) {
+  return await page.evaluate(async () => {
+    return await (
+      window as Window & {
+        __BUZZ_E2E_INVOKE_MOCK_COMMAND__?: (
+          command: string,
+          payload: unknown,
+        ) => Promise<number>;
+      }
+    ).__BUZZ_E2E_INVOKE_MOCK_COMMAND__?.(
+      "get_global_agent_config_set_call_count",
+      null,
+    );
+  });
+}
+
 test("setup shows all bundled harnesses as detected", async ({ page }) => {
   await installMockBridge(
     page,
@@ -558,7 +576,7 @@ test("defaults can be skipped while loading without persisting configuration", a
   expect(await readSavedRuntime(page)).toBeNull();
 });
 
-test("defaults can be skipped when configuration is incomplete", async ({
+test("defaults stages auto-selection and edits without writing when skipped", async ({
   page,
 }) => {
   await installMockBridge(
@@ -566,7 +584,6 @@ test("defaults can be skipped when configuration is incomplete", async ({
     {
       acpRuntimesCatalog: [
         runtime("claude", "available", { status: "logged_in" }),
-        runtime("codex", "available", { status: "logged_in" }),
       ],
       globalAgentConfig: {
         env_vars: {},
@@ -581,11 +598,20 @@ test("defaults can be skipped when configuration is incomplete", async ({
   await navigateToSetupPage(page);
   await page.getByTestId("onboarding-setup-next").click();
 
-  await expect(page.getByTestId("onboarding-finish")).toBeDisabled();
+  await expect(page.getByTestId("global-agent-default-harness")).toHaveText(
+    "Claude Code",
+  );
+  await page.getByTestId("global-agent-model").click();
+  await page
+    .getByTestId("global-agent-model-option-claude-opus-4-20250514")
+    .click();
+  expect(await readGlobalConfigSetterCallCount(page)).toBe(0);
+
   await page.getByTestId("onboarding-config-skip").click();
 
   await expect(page.getByText("Join or create a community")).toBeVisible();
   expect(await readSavedRuntime(page)).toBeNull();
+  expect(await readGlobalConfigSetterCallCount(page)).toBe(0);
 });
 
 test("defaults Back returns to harness setup", async ({ page }) => {
@@ -601,8 +627,13 @@ test("defaults Back returns to harness setup", async ({ page }) => {
   await page.goto("/");
   await navigateToSetupPage(page);
   await page.getByTestId("onboarding-setup-next").click();
+  await expect(page.getByTestId("global-agent-default-harness")).toHaveText(
+    "Claude Code",
+  );
+  expect(await readGlobalConfigSetterCallCount(page)).toBe(0);
   await page.getByTestId("onboarding-back").click();
   await expect(page.getByTestId("onboarding-page-2")).toBeVisible();
+  expect(await readSavedRuntime(page)).toBe("claude");
 });
 
 test("defaults auto-selects the only ready visible harness", async ({
@@ -635,12 +666,10 @@ test("defaults auto-selects the only ready visible harness", async ({
     "Claude Code",
   );
   await expect(page.getByTestId("onboarding-finish")).toBeEnabled();
-  await expect.poll(() => readSavedRuntime(page)).toBe("claude");
+  expect(await readSavedRuntime(page)).toBeNull();
 });
 
-test("Finish waits for the latest rapid harness choice to persist", async ({
-  page,
-}) => {
+test("Next persists the latest staged harness choice", async ({ page }) => {
   await installMockBridge(
     page,
     {
@@ -668,8 +697,8 @@ test("Finish waits for the latest rapid harness choice to persist", async ({
   await harness.click();
   await page.getByTestId("global-agent-default-harness-option-codex").click();
   const finish = page.getByTestId("onboarding-finish");
-  await expect(finish).toBeDisabled();
-  await expect(finish).toBeEnabled({ timeout: 2_000 });
+  await expect(finish).toBeEnabled();
+  expect(await readGlobalConfigSetterCallCount(page)).toBe(0);
   await finish.click();
   await expect(page.getByText("Join or create a community")).toBeVisible();
   expect(await readSavedRuntime(page)).toBe("codex");
@@ -720,7 +749,7 @@ test("defaults requires a choice when multiple visible harnesses are ready", asy
   await page.getByTestId("global-agent-default-harness-option-codex").click();
   await expect(harness).toHaveText("Codex");
   await expect(page.getByTestId("onboarding-finish")).toBeEnabled();
-  await expect.poll(() => readSavedRuntime(page)).toBe("codex");
+  expect(await readSavedRuntime(page)).toBeNull();
 });
 
 /**

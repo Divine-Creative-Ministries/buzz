@@ -10,7 +10,6 @@ import {
 } from "@/features/agents/ui/AgentConfigFields";
 import { resetConfigForHarnessChange } from "@/features/agents/ui/agentConfigOptions";
 import { AgentDropdownSelect } from "@/features/agents/ui/agentConfigControls";
-import { createSaveCoalescer } from "./saveCoalescer";
 import { getBakedBuildEnv, type BakedEnvEntry } from "@/shared/api/tauri";
 import {
   getGlobalAgentConfig,
@@ -51,7 +50,7 @@ function AgentDefaultsSection({
 }: {
   onPersistenceStateChange: (state: {
     canComplete: boolean;
-    flush: () => Promise<void>;
+    commit: () => Promise<void>;
   }) => void;
   readyRuntimeIds: readonly string[];
 }) {
@@ -62,11 +61,8 @@ function AgentDefaultsSection({
   const [isCustomProvider, setIsCustomProvider] = React.useState(false);
   const [isCustomModelEditing, setIsCustomModelEditing] = React.useState(false);
   const [bakedEnv, setBakedEnv] = React.useState<BakedEnvEntry[]>([]);
-  const coalescerRef = React.useRef<{
-    enqueue: (value: GlobalAgentConfig) => void;
-    flush: () => Promise<void>;
-    cancel: () => void;
-  } | null>(null);
+  const configRef = React.useRef<GlobalAgentConfig>(EMPTY_GLOBAL_CONFIG);
+  const isDirtyRef = React.useRef(false);
   const [isSaving, setIsSaving] = React.useState(false);
   const [configIsValid, setConfigIsValid] = React.useState(false);
 
@@ -82,6 +78,7 @@ function AgentDefaultsSection({
       if (unmounted) return;
 
       if (configResult.status === "fulfilled") {
+        configRef.current = configResult.value;
         setConfig(configResult.value);
       }
       if (bakedEnvResult.status === "fulfilled") {
@@ -92,25 +89,8 @@ function AgentDefaultsSection({
 
     void loadDefaults();
 
-    // The coalescer serializes autosaves and drains any edit that arrived
-    // while a previous save was in flight. Cancel on unmount so a slow
-    // in-flight request never calls setState on an unmounted component.
-    const coalescer = createSaveCoalescer<GlobalAgentConfig>(
-      // set_global_agent_config returns a save result (config + restart
-      // counts); the coalescer round-trips the persisted config only.
-      async (next) => (await setGlobalAgentConfig(next)).config,
-      (saving) => {
-        if (!unmounted) setIsSaving(saving);
-      },
-      (saved) => {
-        if (!unmounted) setConfig(saved);
-      },
-    );
-    coalescerRef.current = coalescer;
-
     return () => {
       unmounted = true;
-      coalescer.cancel();
     };
   }, []);
 
@@ -165,8 +145,9 @@ function AgentDefaultsSection({
       const next = resetConfigForHarnessChange(config, runtimeId);
       setIsCustomModelEditing(false);
       setIsCustomProvider(false);
+      isDirtyRef.current = true;
+      configRef.current = next;
       setConfig(next);
-      coalescerRef.current?.enqueue(next);
     },
     [config],
   );
@@ -182,21 +163,29 @@ function AgentDefaultsSection({
     selectedRuntimeId,
   ]);
 
-  const flushPersistence = React.useCallback(
-    () => coalescerRef.current?.flush() ?? Promise.resolve(),
-    [],
-  );
+  const commitPersistence = React.useCallback(async () => {
+    if (!isDirtyRef.current) return;
+    setIsSaving(true);
+    try {
+      const saved = await setGlobalAgentConfig(configRef.current);
+      isDirtyRef.current = false;
+      configRef.current = saved.config;
+      setConfig(saved.config);
+    } finally {
+      setIsSaving(false);
+    }
+  }, []);
   React.useEffect(() => {
     onPersistenceStateChange({
       // configIsValid comes from AgentConfigFields' onValidityChange and
       // covers model + provider credentials — a harness selection alone is
       // not a working default (e.g. buzz-agent with no provider configured).
       canComplete: selectedRuntimeId.length > 0 && configIsValid && !isSaving,
-      flush: flushPersistence,
+      commit: commitPersistence,
     });
   }, [
+    commitPersistence,
     configIsValid,
-    flushPersistence,
     isSaving,
     onPersistenceStateChange,
     selectedRuntimeId,
@@ -241,11 +230,9 @@ function AgentDefaultsSection({
             isCustomModelEditing={isCustomModelEditing}
             isCustomProvider={isCustomProvider}
             onConfigChange={(next) => {
-              // Always apply optimistically so the UI never reverts mid-save,
-              // then enqueue the persist — the coalescer serialises multiple
-              // rapid edits into a single trailing request.
+              isDirtyRef.current = true;
+              configRef.current = next;
               setConfig(next);
-              coalescerRef.current?.enqueue(next);
             }}
             onCustomModelEditingChange={setIsCustomModelEditing}
             onIsCustomProviderChange={setIsCustomProvider}
@@ -275,8 +262,8 @@ export function DefaultConfigStep({
 }: DefaultConfigStepProps) {
   const [persistenceState, setPersistenceState] = React.useState<{
     canComplete: boolean;
-    flush: () => Promise<void>;
-  }>({ canComplete: false, flush: () => Promise.resolve() });
+    commit: () => Promise<void>;
+  }>({ canComplete: false, commit: () => Promise.resolve() });
   const [completionError, setCompletionError] = React.useState<string | null>(
     null,
   );
@@ -286,8 +273,20 @@ export function DefaultConfigStep({
     setIsCompleting(true);
     setCompletionError(null);
     try {
-      await persistenceState.flush();
+      await persistenceState.commit();
       actions.complete();
+    } catch {
+      setCompletionError("Couldn't save your default harness. Try again.");
+      setIsCompleting(false);
+    }
+  }, [actions, persistenceState]);
+
+  const handleBack = React.useCallback(async () => {
+    setIsCompleting(true);
+    setCompletionError(null);
+    try {
+      await persistenceState.commit();
+      actions.back();
     } catch {
       setCompletionError("Couldn't save your default harness. Try again.");
       setIsCompleting(false);
@@ -355,7 +354,8 @@ export function DefaultConfigStep({
         <Button
           className="h-9 rounded-full bg-foreground/10 px-6 text-sm hover:bg-foreground/15"
           data-testid="onboarding-back"
-          onClick={actions.back}
+          disabled={isCompleting}
+          onClick={() => void handleBack()}
           type="button"
           variant="ghost"
         >

@@ -7328,6 +7328,7 @@ let installCallCount = 0;
 /** Per-runtime call counters for `installAcpRuntimeByRuntime` sequences. */
 const installCallCountByRuntime: Record<string, number> = {};
 let addChannelMembersCallCount = 0;
+let setGlobalAgentConfigCallCount = 0;
 let mockGlobalAgentConfig: {
   env_vars: Record<string, string>;
   provider: string | null;
@@ -11578,7 +11579,10 @@ export function maybeInstallE2eTauriMocks() {
           }
         );
       }
+      case "get_global_agent_config_set_call_count":
+        return setGlobalAgentConfigCallCount;
       case "set_global_agent_config": {
+        setGlobalAgentConfigCallCount += 1;
         // Echo back the submitted config as the saved value (mirrors the
         // backend's strip-on-write pass in tests where all values are already
         // non-empty). The invoke payload wraps it as { config }.
