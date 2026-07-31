@@ -638,7 +638,7 @@ test("defaults Back returns to harness setup", async ({ page }) => {
   expect(await readGlobalConfigSetterCallCount(page)).toBe(0);
   await page.getByTestId("onboarding-back").click();
   await expect(page.getByTestId("onboarding-page-2")).toBeVisible();
-  expect(await readSavedRuntime(page)).toBe("claude");
+  await expect.poll(() => readSavedRuntime(page)).toBe("claude");
 });
 
 test("defaults auto-selects the only ready visible harness", async ({
@@ -706,7 +706,40 @@ test("Next persists the latest staged harness choice", async ({ page }) => {
   expect(await readGlobalConfigSetterCallCount(page)).toBe(0);
   await finish.click();
   await expect(page.getByText("Join or create a community")).toBeVisible();
-  expect(await readSavedRuntime(page)).toBe("codex");
+  await expect.poll(() => readSavedRuntime(page)).toBe("codex");
+});
+
+test("Next does not wait for a slow save", async ({ page }) => {
+  await installMockBridge(
+    page,
+    {
+      acpRuntimesCatalog: [
+        runtime("claude", "available", { status: "logged_in" }),
+        runtime("codex", "available", { status: "logged_in" }),
+      ],
+      globalAgentConfig: {
+        env_vars: {},
+        provider: null,
+        model: null,
+        preferred_runtime: null,
+      },
+      setGlobalAgentConfigDelayMs: 1_000,
+    },
+    { skipCommunitySeed: true, skipOnboardingSeed: true },
+  );
+  await page.goto("/");
+  await navigateToSetupPage(page);
+  await page.getByTestId("onboarding-setup-next").click();
+
+  const harness = page.getByTestId("global-agent-default-harness");
+  await harness.click();
+  await page.getByTestId("global-agent-default-harness-option-codex").click();
+  await page.getByTestId("onboarding-finish").click();
+
+  await expect(page.getByText("Join or create a community")).toBeVisible();
+  expect(await readGlobalConfigSetterCallCount(page)).toBe(1);
+  expect(await readSavedRuntime(page)).toBeNull();
+  await expect.poll(() => readSavedRuntime(page)).toBe("codex");
 });
 
 test("defaults requires a choice when multiple visible harnesses are ready", async ({

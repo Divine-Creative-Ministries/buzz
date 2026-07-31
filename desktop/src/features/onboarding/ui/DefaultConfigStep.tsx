@@ -264,33 +264,14 @@ export function DefaultConfigStep({
     canComplete: boolean;
     commit: () => Promise<void>;
   }>({ canComplete: false, commit: () => Promise.resolve() });
-  const [completionError, setCompletionError] = React.useState<string | null>(
-    null,
-  );
-  const [isCompleting, setIsCompleting] = React.useState(false);
-
-  const handleComplete = React.useCallback(async () => {
-    setIsCompleting(true);
-    setCompletionError(null);
-    try {
-      await persistenceState.commit();
-      actions.complete();
-    } catch {
-      setCompletionError("Couldn't save your default harness. Try again.");
-      setIsCompleting(false);
-    }
+  const handleComplete = React.useCallback(() => {
+    void persistenceState.commit().catch(() => undefined);
+    actions.complete();
   }, [actions, persistenceState]);
 
-  const handleBack = React.useCallback(async () => {
-    setIsCompleting(true);
-    setCompletionError(null);
-    try {
-      await persistenceState.commit();
-      actions.back();
-    } catch {
-      setCompletionError("Couldn't save your default harness. Try again.");
-      setIsCompleting(false);
-    }
+  const handleBack = React.useCallback(() => {
+    void persistenceState.commit().catch(() => undefined);
+    actions.back();
   }, [actions, persistenceState]);
 
   return (
@@ -317,14 +298,6 @@ export function DefaultConfigStep({
             onPersistenceStateChange={setPersistenceState}
             readyRuntimeIds={readyRuntimeIds}
           />
-          {completionError ? (
-            <p
-              className="mt-3 text-center text-xs text-destructive"
-              role="alert"
-            >
-              {completionError}
-            </p>
-          ) : null}
         </div>
       </div>
 
@@ -334,8 +307,8 @@ export function DefaultConfigStep({
           <Button
             className={`${ONBOARDING_PRIMARY_CTA_CLASS} text-sm`}
             data-testid="onboarding-finish"
-            disabled={!persistenceState.canComplete || isCompleting}
-            onClick={() => void handleComplete()}
+            disabled={!persistenceState.canComplete}
+            onClick={handleComplete}
             type="button"
           >
             Next
@@ -354,8 +327,7 @@ export function DefaultConfigStep({
         <Button
           className="h-9 rounded-full bg-foreground/10 px-6 text-sm hover:bg-foreground/15"
           data-testid="onboarding-back"
-          disabled={isCompleting}
-          onClick={() => void handleBack()}
+          onClick={handleBack}
           type="button"
           variant="ghost"
         >
