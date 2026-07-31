@@ -325,14 +325,10 @@ export function useUnreadChannels(
       );
       if (markAt === null) return;
       markContextRead(channelId, markAt);
-      // Clear observed-latest refs when the read marker covers them so the
-      // unread memo sees `latest === undefined` until a genuinely new event
-      // arrives. Without this, `latest > readAt` resolves to `T > T` (false)
-      // but the channel lingers in the set when advanceContext's monotonic
-      // guard suppresses the readStateVersion bump.
+      // Delegate all observed-ref mutation to the fenced owner operation —
+      // the parent must not touch latestByChannelRef or observedUnreadEventsByChannelRef
+      // directly, or a stale scope-A callback could corrupt scope B before the fence rejects.
       if (clearObserved) {
-        latestByChannelRef.current.delete(channelId);
-        observedUnreadEventsByChannelRef.current.delete(channelId);
         observedPersistence.removeChannel(channelId);
         bumpLatestVersion();
       }
@@ -961,11 +957,12 @@ export function useUnreadChannels(
         markContextRead(channelId, unixSeconds);
       }
     }
-    latestByChannelRef.current = new Map();
-    observedUnreadEventsByChannelRef.current = new Map();
     if (pubkey) {
       forcedUnreadStore.write(pubkey, forcedUnreadRef.current);
     }
+    // Delegate all observed-ref mutation to the fenced owner operation —
+    // the parent must not reset latestByChannelRef or observedUnreadEventsByChannelRef
+    // directly, or a stale scope-A callback could corrupt scope B before the fence rejects.
     observedPersistence.clearAll();
     bumpLatestVersion();
   }, [getEffectiveTimestamp, markContextRead, observedPersistence, pubkey]);

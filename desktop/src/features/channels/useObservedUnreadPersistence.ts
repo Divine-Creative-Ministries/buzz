@@ -167,14 +167,23 @@ export function useObservedUnreadPersistence(
     // Reject if the loaded scope has drifted — a stale callback must not
     // cancel the new scope's pending snapshot or clear the wrong bucket.
     if (scopeLoadedRef.current !== currentScope) return;
-    // Cancel any pending snapshot — mark-all clears both in-memory refs and
-    // storage, so the pending debounce snapshot must not resurrect any channels.
+    // Cancel any pending snapshot and clear both in-memory refs before touching
+    // storage — the parent no longer resets the refs directly, so this is the
+    // single transactional clear path for mark-all-read.
     if (timerRef.current !== null) {
       clearTimeout(timerRef.current);
       timerRef.current = null;
     }
+    observedUnreadEventsByChannelRef.current = new Map();
+    latestByChannelRef.current = new Map();
     clearObservedUnreadStorage(normalizedPubkey ?? "", normalizedRelayUrl);
-  }, [currentScope, normalizedPubkey, normalizedRelayUrl]);
+  }, [
+    currentScope,
+    normalizedPubkey,
+    normalizedRelayUrl,
+    observedUnreadEventsByChannelRef,
+    latestByChannelRef,
+  ]);
 
   // isScopeLoaded reads the ref at call time — always fresh, never a stale
   // snapshot from a closed-over useMemo value.

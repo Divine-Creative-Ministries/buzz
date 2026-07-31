@@ -698,14 +698,19 @@ test("isScopeLoaded returns false before identity-reset effect commits, true aft
   await harness.unmount();
 });
 
-test("A→B late-timer: scheduled write owns immutable scope snapshot, not mutable refs", async () => {
-  // Prove that scheduleObservedUnreadWrite captures an immutable snapshot at
-  // schedule time, so a timer that fires AFTER a scope switch writes A's
-  // snapshot under A's key — not B's mutable refs under A's key.
+test("A→B scope switch: pending A-timer is cancelled by flush, A data persisted synchronously", async () => {
+  // The hydration effect cleanup calls flushObservedUnreadWrite when scope
+  // switches, which cancels the pending A-timer and synchronously writes A's
+  // current snapshot to A's bucket. After the switch:
+  //   - A's bucket holds the flushed data.
+  //   - B's bucket has no A contamination.
+  //   - A new B-scope timer can schedule independently.
   //
-  // The important invariant: after A schedules a snapshot and we switch to B,
-  // the pending A-timer must be CANCELLED by the scope-switch flush (hydration
-  // effect), so its snapshot never lands after B's data is loaded.
+  // A genuinely late scope-A timer cannot exist after a scope switch, because
+  // flushObservedUnreadWrite always cancels the pending timer before resetting
+  // the refs. The immutability of a snapshot at schedule time (that a timer
+  // fired BEFORE flush would write A's snapshot, not B's live refs) is proven
+  // directly in observedUnreadStorage.test.mjs via scheduleObservedUnreadWrite.
   installFreshStorage();
 
   const PUBKEY_AT = "pubkey-a-t";
@@ -736,7 +741,7 @@ test("A→B late-timer: scheduled write owns immutable scope snapshot, not mutab
 
   const harness = await mountHook(propsAT, refsAT);
 
-  // After mount, hydration loaded the pre-seeded event into refs.
+  // Hydration loaded A's pre-seeded event.
   assert.ok(
     refsAT.eventsRef.current.has("ch-at"),
     "hydration must restore ch-at from storage",
@@ -744,34 +749,31 @@ test("A→B late-timer: scheduled write owns immutable scope snapshot, not mutab
 
   const scopeAT = harness.api.currentScope;
 
-  // Schedule a write for scope A (1-second debounce — timer pending).
-  // The timer snapshot captures A's current event map (ch-at present).
+  // Schedule a write for scope A (timer pending with immutable snapshot).
   harness.api.schedule(scopeAT);
 
-  // Switch to scope B BEFORE the timer fires. The hydration effect cleanup
-  // flushes A synchronously (cancelling the timer and writing A's snapshot),
-  // then resets refs to new Maps, then loads B's storage.
+  // Switch to scope B. The hydration effect cleanup fires first:
+  // 1. flushObservedUnreadWrite — cancels the pending timer, writes A's
+  //    snapshot synchronously to A's bucket.
+  // 2. Refs are reset to new Maps, B's storage is loaded.
   const propsBT = { ...propsAT, pubkey: PUBKEY_BT, relay: RELAY_BT };
   await harness.render(propsBT);
 
-  // A's pending timer was cancelled during the flush — A's data is in storage
-  // from the synchronous flush, not from the timer.
+  // A's data must be in storage from the synchronous flush.
   const storedAT = readObservedUnreadFromStorage(PUBKEY_AT, RELAY_AT);
   assert.ok(
     storedAT?.has("ch-at"),
-    "A scope must be flushed on scope switch (synchronous flush in hydration effect cleanup)",
+    "A scope must be flushed synchronously on scope switch",
   );
 
-  // B's bucket must NOT contain A's channel (no cross-scope contamination).
+  // B's bucket must not contain A's channel.
   const storedBT = readObservedUnreadFromStorage(PUBKEY_BT, RELAY_BT);
-  if (storedBT !== null) {
-    assert.ok(
-      !storedBT.has("ch-at"),
-      "B's bucket must not contain A's channel after scope switch",
-    );
-  }
+  assert.ok(
+    storedBT == null || !storedBT.has("ch-at"),
+    "B's bucket must not contain A's channel after scope switch",
+  );
 
-  // Now seed B and schedule a B write. Flush via pagehide to advance it.
+  // Seed B, schedule a B write, flush via pagehide — B persists independently.
   const chBT = new Map();
   chBT.set("evt-bt", makeEvent("evt-bt", "ch-bt", NOW_S + 300));
   refsAT.eventsRef.current.set("ch-bt", chBT);
@@ -938,7 +940,7 @@ test("unrelated rerenders do not change API object identity (catch-up stability)
   const harness = await mountHook(props, refs);
   const api1 = harness.api;
   const schedule1 = api1.schedule;
-  const removeChannelAndPersistCurrent1 = api1.removeChannelAndPersistCurrent;
+  const removeChannel1 = api1.removeChannel;
   const clearAll1 = api1.clearAll;
   const isScopeLoaded1 = api1.isScopeLoaded;
 
@@ -956,9 +958,9 @@ test("unrelated rerenders do not change API object identity (catch-up stability)
   );
   assert.equal(schedule1, api2.schedule, "schedule must be stable");
   assert.equal(
-    removeChannelAndPersistCurrent1,
-    api2.removeChannelAndPersistCurrent,
-    "removeChannelAndPersistCurrent must be stable",
+    removeChannel1,
+    api2.removeChannel,
+    "removeChannel must be stable",
   );
   assert.equal(clearAll1, api2.clearAll, "clearAll must be stable");
   assert.equal(
