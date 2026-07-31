@@ -721,12 +721,12 @@ pub fn spawn_agent_child(
     if let Some(max_dur) = record.max_turn_duration_seconds {
         command.env("BUZZ_ACP_MAX_TURN_DURATION", max_dur.to_string());
     }
-    // Emitted only when the toggle is OFF, so the harness default stays the
-    // source of truth when ON (as with BUZZ_ACP_IDLE_TIMEOUT above). The key is
-    // not reserved, so a user setting it in the env-vars editor wins.
-    if !record.resume_on_restart {
-        command.env("BUZZ_ACP_RESUME_ON_RESTART", "false");
-    }
+    // Reserved and emitted unconditionally — UI toggle is authoritative, no ambient env leak.
+    command.env_remove("BUZZ_ACP_RESUME_ON_RESTART");
+    command.env(
+        "BUZZ_ACP_RESUME_ON_RESTART",
+        record.resume_on_restart.to_string(),
+    );
     command.env("BUZZ_ACP_AGENTS", record.parallelism.to_string());
     command.env("BUZZ_ACP_MULTIPLE_EVENT_HANDLING", "steer");
     command.env("BUZZ_ACP_DEDUP", "queue");

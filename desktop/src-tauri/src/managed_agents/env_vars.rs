@@ -77,6 +77,12 @@ pub(crate) const RESERVED_ENV_KEYS: &[&str] = &[
     "BUZZ_ACP_RESPOND_TO",
     "BUZZ_ACP_RESPOND_TO_ALLOWLIST",
     "BUZZ_ACP_AGENT_OWNER",
+    // Resume toggle: overriding would make the running agent's resume
+    // behavior diverge from the saved/UI-visible setting. Unlike
+    // BUZZ_ACP_IDLE_TIMEOUT (a tuning knob with no UI promise), this key
+    // carries an explicit UI toggle promise — the running agent must
+    // always match what the UI shows.
+    "BUZZ_ACP_RESUME_ON_RESTART",
     // Readiness handoff: desktop is the ONLY readiness source. A saved or
     // ambient env var must not be able to forge setup mode (NotReady) on a
     // Ready agent or suppress it (empty/stale payload) on a NotReady one.

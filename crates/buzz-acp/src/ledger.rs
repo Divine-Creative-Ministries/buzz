@@ -97,11 +97,42 @@ pub struct Ledger {
     unresolved: HashMap<Uuid, Vec<LedgerRecord>>,
 }
 
+/// Delete the ledger file for `(agent_pubkey_hex, relay_url)` in `state_dir`,
+/// if it exists. Called at boot when `resume_on_restart` is false so that
+/// turning the toggle off truly drops any pending work — a future re-enable
+/// starts clean rather than resuming a stale turn from a prior session.
+///
+/// This is a best-effort operation: `NotFound` is silently ignored (nothing
+/// to delete), and any other I/O error is logged and swallowed — the hot path
+/// must never be blocked by a degraded filesystem, matching the crate's
+/// established degraded-filesystem convention.
+pub fn delete_ledger_file(state_dir: &Path, agent_pubkey_hex: &str, relay_url: &str) {
+    let prefix: String = agent_pubkey_hex.chars().take(PUBKEY_PREFIX_LEN).collect();
+    let canonical =
+        buzz_core::relay::normalize_relay_url(relay_url).unwrap_or_else(|_| relay_url.to_owned());
+    let relay_hash_full = hex::encode(Sha256::digest(canonical.as_bytes()));
+    let relay_hash: String = relay_hash_full.chars().take(RELAY_HASH_LEN).collect();
+    let path = state_dir.join(format!("pending-turns-{prefix}-{relay_hash}.json"));
+    match std::fs::remove_file(&path) {
+        Ok(()) => tracing::debug!(
+            path = %path.display(),
+            "resume ledger deleted (resume_on_restart=false)"
+        ),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => tracing::warn!(
+            path = %path.display(),
+            error = %e,
+            "failed to delete resume ledger on disable — file may resurface on re-enable"
+        ),
+    }
+}
+
 impl Ledger {
     /// A ledger with no backing file — every operation is a silent no-op.
-    /// Used when `--resume-on-restart` is off: no disk I/O at all (an
-    /// existing file from a previous run when the flag was on is left
-    /// untouched, so toggling the flag back on later still resumes it).
+    /// Used when `--resume-on-restart` is off. Call [`delete_ledger_file`]
+    /// before this to enforce the "off means off" product promise: any file
+    /// left from a previous enabled run is removed so toggling back on later
+    /// starts clean rather than resuming a stale turn from a prior session.
     pub fn disabled() -> Ledger {
         Ledger {
             path: None,
@@ -777,5 +808,50 @@ mod tests {
             b_after.channels.contains_key(&ch_b),
             "relay A commit must not erase relay B's records"
         );
+    }
+
+    #[test]
+    fn test_disable_deletes_file_and_re_enable_starts_clean() {
+        // Discriminating test for the "off means off" product promise:
+        // persist a record → boot with resume off → file is gone →
+        // boot with resume on → nothing resumed.
+        //
+        // Confirms that delete_ledger_file removes the correct file and that
+        // a subsequent Ledger::load cannot recover the deleted record.
+        let dir = tempfile::tempdir().unwrap();
+        let pubkey = "aabbccddeeff0011";
+        let relay = TEST_RELAY_URL;
+
+        // Step 1: persist a record (resume enabled).
+        let (mut ledger, _staged) = Ledger::load(dir.path(), pubkey, relay, 0);
+        let ch = Uuid::new_v4();
+        ledger.sync(ch, vec![trigger("event-abc", 1, 100, false)]);
+        let file_path = ledger
+            .path()
+            .expect("ledger must have a path")
+            .to_path_buf();
+        assert!(file_path.exists(), "ledger file must exist after sync");
+
+        // Step 2: boot with resume off — file must be deleted.
+        delete_ledger_file(dir.path(), pubkey, relay);
+        assert!(
+            !file_path.exists(),
+            "ledger file must be deleted by delete_ledger_file"
+        );
+
+        // Step 3: boot with resume on again — staged ledger must be empty.
+        let (_new_ledger, staged) = Ledger::load(dir.path(), pubkey, relay, 0);
+        assert!(
+            staged.channels.is_empty(),
+            "re-enabled boot must not recover any records after the file was deleted"
+        );
+    }
+
+    #[test]
+    fn test_disable_delete_is_silent_noop_when_file_missing() {
+        // delete_ledger_file must not panic or error when no file exists.
+        let dir = tempfile::tempdir().unwrap();
+        delete_ledger_file(dir.path(), "aabbccddeeff0011", TEST_RELAY_URL);
+        // If we reach here without panic, the test passes.
     }
 }
