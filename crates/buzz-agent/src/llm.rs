@@ -4091,6 +4091,153 @@ mod tests {
         );
     }
 
+    /// Behavioral shape differential for the pure Anthropic route.
+    ///
+    /// Drives `anthropic_thinking_config_generated("anthropic", raw_model, effort, …)`
+    /// against the prior pure-Anthropic authority `anthropic_thinking_config(raw_model, …)`
+    /// for every corpus entry with `provider == "anthropic"` across all seven effort levels.
+    ///
+    /// This completes the provider-general scope of the authorized corrective pass: the
+    /// existing differential covers databricks_v2; the normalize-effort differential covers
+    /// openai/databricks/openai-compat; this test covers the Anthropic thinking-config path.
+    ///
+    /// An F1 allowlist entry covers the blank-model corpus entries: the old hand-table returns
+    /// `(None, None)` for an unrecognized (empty) model, while the generated manifest explicitly
+    /// classifies blank Anthropic models as adaptive (the intentional Phase-2 behavior).
+    #[test]
+    fn behavioral_differential_anthropic_route() {
+        use crate::config::{anthropic_thinking_config, anthropic_thinking_config_generated};
+        use std::collections::HashSet;
+
+        const MAX_OUTPUT_TOKENS: u32 = 32_768;
+
+        const ALL_EFFORTS: &[ThinkingEffort] = &[
+            ThinkingEffort::None,
+            ThinkingEffort::Minimal,
+            ThinkingEffort::Low,
+            ThinkingEffort::Medium,
+            ThinkingEffort::High,
+            ThinkingEffort::XHigh,
+            ThinkingEffort::Max,
+        ];
+
+        // F1 allowlist: intentional divergences between the generated manifest and the old
+        // hand-table. Stale entries (that never fire) fail the test.
+        struct AllowlistEntry {
+            raw_model_id: &'static str,
+            reason: &'static str,
+        }
+        let allowlist: &[AllowlistEntry] = &[
+            // F1 ADOPT: generated manifest classifies blank Anthropic model as adaptive
+            // (corpus entries anthropic-unknown-blank and anthropic-blank-adaptive-full);
+            // old anthropic_thinking_config returns (None, None) for unrecognized models.
+            AllowlistEntry {
+                raw_model_id: "",
+                reason: "F1 ADOPT: generated assumes adaptive for blank Anthropic model; old hand-table returned (None, None)",
+            },
+        ];
+        let mut allowlist_hits: HashSet<&str> = HashSet::new();
+
+        #[derive(serde::Deserialize)]
+        struct CorpusEntry {
+            #[serde(rename = "_group")]
+            group: Option<String>,
+            id: Option<String>,
+            provider: Option<String>,
+            raw_model_id: Option<String>,
+        }
+
+        let corpus_json = include_str!("../../../scripts/normative-corpus.json");
+        let corpus: Vec<CorpusEntry> =
+            serde_json::from_str(corpus_json).expect("corpus must be valid JSON");
+
+        // Collect (label, raw_model_id) for provider == "anthropic".
+        let mut inputs: Vec<(String, String)> = Vec::new();
+        for e in &corpus {
+            if e.group.is_some() {
+                continue;
+            }
+            let (prov, model) = match (&e.provider, &e.raw_model_id) {
+                (Some(p), Some(m)) => (p.as_str(), m.as_str()),
+                _ => continue,
+            };
+            if prov == "anthropic" {
+                let label = format!("corpus:{}", e.id.as_deref().unwrap_or(model));
+                inputs.push((label, model.to_owned()));
+            }
+        }
+
+        assert!(
+            !inputs.is_empty(),
+            "No anthropic inputs found in normative corpus"
+        );
+
+        let mut divergences: Vec<String> = Vec::new();
+
+        for (label, raw_model) in &inputs {
+            let mut per_effort: Vec<String> = Vec::new();
+            for &effort in ALL_EFFORTS {
+                let new_shape = anthropic_thinking_config_generated(
+                    "anthropic",
+                    raw_model,
+                    effort,
+                    MAX_OUTPUT_TOKENS,
+                );
+                let old_shape = anthropic_thinking_config(raw_model, effort, MAX_OUTPUT_TOKENS);
+                if new_shape != old_shape {
+                    per_effort.push(format!(
+                        "  effort={}: old={:?} new={:?}",
+                        effort.openai_effort_str(),
+                        old_shape,
+                        new_shape
+                    ));
+                }
+            }
+            if !per_effort.is_empty() {
+                // Check allowlist before treating as a divergence.
+                let is_allowlisted = allowlist
+                    .iter()
+                    .any(|e| e.raw_model_id == raw_model.as_str());
+                if is_allowlisted {
+                    allowlist_hits.insert(raw_model.as_str());
+                } else {
+                    divergences.push(format!(
+                        "BEHAVIORAL_DIVERGE anthropic_route [{label}] model={raw_model:?}:\n{}",
+                        per_effort.join("\n")
+                    ));
+                }
+            }
+        }
+
+        // Stale allowlist: any declared entry that never fired is a bug.
+        let mut stale: Vec<String> = Vec::new();
+        for entry in allowlist {
+            if !allowlist_hits.contains(entry.raw_model_id) {
+                stale.push(format!(
+                    "STALE_ALLOWLIST model={} reason={}",
+                    entry.raw_model_id, entry.reason
+                ));
+            }
+        }
+
+        let mut failures = divergences.clone();
+        failures.extend(stale);
+
+        assert!(
+            failures.is_empty(),
+            "behavioral_differential_anthropic_route found {} failure(s):\n{}",
+            failures.len(),
+            failures.join("\n")
+        );
+
+        println!(
+            "behavioral_differential_anthropic_route: {} anthropic corpus inputs probed, {} F1 allowlist slots exercised/{}, 0 unexpected divergences",
+            inputs.len(),
+            allowlist_hits.len(),
+            allowlist.len(),
+        );
+    }
+
     #[test]
     fn parse_responses_rejects_malformed_function_arguments() {
         let v = serde_json::json!({
