@@ -1292,6 +1292,7 @@ pub enum ProjectsCmd {
         repo: Vec<String>,
     },
     /// Update project metadata (at least one setter or clearer required)
+    #[command(group = clap::ArgGroup::new("mutation").required(true).multiple(true))]
     Update {
         /// Project slug
         slug: String,
@@ -2255,6 +2256,77 @@ mod tests {
                 .map(|(cmd, env)| format!("  command={cmd:?} env={env:?}"))
                 .collect::<Vec<_>>()
                 .join("\n")
+        );
+    }
+
+    // ── projects update mutation group ────────────────────────────────────────
+
+    /// Multiple independent fields must be accepted in the same invocation.
+    #[test]
+    fn projects_update_multi_field_is_accepted() {
+        assert!(
+            Cli::try_parse_from([
+                "buzz",
+                "projects",
+                "update",
+                "my-slug",
+                "--name",
+                "X",
+                "--description",
+                "Y",
+            ])
+            .is_ok(),
+            "--name and --description together must be accepted"
+        );
+    }
+
+    /// A setter for one field and a clearer for a different field must be accepted.
+    #[test]
+    fn projects_update_setter_with_other_clearer_is_accepted() {
+        assert!(
+            Cli::try_parse_from([
+                "buzz",
+                "projects",
+                "update",
+                "my-slug",
+                "--name",
+                "X",
+                "--clear-description",
+            ])
+            .is_ok(),
+            "--name with --clear-description must be accepted"
+        );
+    }
+
+    /// A setter and its own clearer are mutually exclusive — clap must reject this.
+    #[test]
+    fn projects_update_setter_with_own_clearer_is_rejected() {
+        assert!(
+            Cli::try_parse_from([
+                "buzz",
+                "projects",
+                "update",
+                "my-slug",
+                "--name",
+                "X",
+                "--clear-name",
+            ])
+            .is_err(),
+            "--name and --clear-name together must be rejected by clap"
+        );
+    }
+
+    /// Providing no mutation options at all must be rejected by clap (required group).
+    #[test]
+    fn projects_update_no_mutation_is_rejected_by_clap() {
+        // Without credentials, a valid parse would reach authentication and fail
+        // with auth_error — but a clap-level rejection happens before any I/O.
+        // We verify it's a clap error (not just any error) by checking the error
+        // kind is not a runtime/auth failure — Cli::try_parse_from returns Err
+        // immediately for argument violations.
+        assert!(
+            Cli::try_parse_from(["buzz", "projects", "update", "my-slug"]).is_err(),
+            "update with no setters or clearers must be rejected at parse time"
         );
     }
 }

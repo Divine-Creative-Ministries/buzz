@@ -298,6 +298,7 @@ pub async fn cmd_add_repo(
         .filter(|t| tag_name(t) == Some("a"))
         .filter_map(|t| tag_value(t).map(String::from))
         .collect();
+    let mut added = 0usize;
     for m in &new_members {
         if !existing_coords.contains(m.coord.as_str()) {
             let parts = m.to_tag_parts();
@@ -306,7 +307,15 @@ pub async fn cmd_add_repo(
                 Tag::parse(parts_ref.iter().copied())
                     .map_err(|e| CliError::Other(format!("member tag construction failed: {e}")))?,
             );
+            added += 1;
         }
+    }
+
+    // All requested coordinates were already present — no change to publish.
+    if added == 0 {
+        return Err(CliError::Conflict(format!(
+            "all requested repositories are already members of project {slug:?}"
+        )));
     }
 
     let builder = rebuild_project(&head.content, tags, next_ts)?;
@@ -370,13 +379,8 @@ pub async fn cmd_remove_repo(
         .cloned()
         .collect();
 
-    // Note: rebuild_project also strips auth, but we already did it above.
-    // Pass through the full validation.
-    build_project_with_tags(&head.content, tags.clone())
-        .map_err(|e| CliError::Other(format!("envelope validation failed: {e}")))?;
-    let builder = build_project_with_tags(&head.content, tags)
-        .map_err(|e| CliError::Other(format!("envelope validation failed: {e}")))?
-        .custom_created_at(next_ts);
+    // Single rebuild validates the full envelope and strips any remaining auth.
+    let builder = rebuild_project(&head.content, tags, next_ts)?;
     submit_project(client, builder).await
 }
 
@@ -396,8 +400,10 @@ pub async fn cmd_update(
     visibility: Option<&str>,
     clear_visibility: bool,
 ) -> Result<(), CliError> {
-    // Guard: at least one mutation required (clap group = "mutation" tracks
-    // conflicts between setters and clearers but does not enforce presence).
+    // Guard: at least one mutation required. The clap `ArgGroup` with
+    // `required(true).multiple(true)` enforces this at parse time; this
+    // runtime check is a defense-in-depth safety net for callers that invoke
+    // `cmd_update` directly (e.g. tests and future programmatic callers).
     let has_mutation = name.is_some()
         || clear_name
         || description.is_some()
@@ -1045,6 +1051,27 @@ mod tests {
         assert!(
             format!("{err}").contains("buzz projects update"),
             "collision message must name the update command so users know what to do"
+        );
+    }
+
+    // ── add-repo no-op guard ──────────────────────────────────────────────────
+
+    /// Re-adding a coordinate that is already a member must return `Conflict`
+    /// without publishing a no-op replacement head.  Consistent with the
+    /// empty-update guard: an operation that changes nothing must not advance
+    /// `created_at`.
+    #[test]
+    fn add_repo_no_op_conflict_message_identifies_project() {
+        let slug = "my-project";
+        let msg = format!("all requested repositories are already members of project {slug:?}");
+        let err = CliError::Conflict(msg.clone());
+        assert!(
+            format!("{err}").contains(slug),
+            "no-op add-repo conflict message must name the project"
+        );
+        assert!(
+            matches!(err, CliError::Conflict(_)),
+            "no-op add-repo must produce Conflict, not a different error kind"
         );
     }
 }

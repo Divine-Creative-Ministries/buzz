@@ -1964,12 +1964,13 @@ impl ProjectMemberCoord {
 /// Rules enforced (matches relay `buzz-db` ingest logic):
 /// 1. `d` cardinality: exactly one `d` tag.
 /// 2. `d` value: non-empty, ≤1024 bytes.
-/// 3. Member tag arity: every `a` tag has 2 or 3 elements (no more, no fewer).
-/// 4. Member coordinate grammar: first-two-colons split; kind literal `"30617"`;
+/// 3. Member cap: raw count of every `a` tag ≤ 64 (checked **before** per-tag
+///    parsing, matching relay rule order).
+/// 4. Member tag arity: every `a` tag has 2 or 3 elements (no more, no fewer).
+/// 5. Member coordinate grammar: first-two-colons split; kind literal `"30617"`;
 ///    owner lowercase 64-hex; repo-d non-empty verbatim.
-/// 5. Member deduplication: coordinate equality only (hint ignored); any
+/// 6. Member deduplication: coordinate equality only (hint ignored); any
 ///    coordinate that appears more than once is a duplicate.
-/// 6. Member cap: raw count of every `a` tag ≤ 64 (checked **before** dedup).
 /// 7. Singleton metadata: each of `name`, `description`, `buzz-channel`,
 ///    `buzz-visibility` appears at most once.
 /// 8. Metadata byte lengths: `name` ≤256, `description` ≤2048,
@@ -2002,8 +2003,17 @@ pub fn validate_project_envelope(tags: &[Tag], _content: &str) -> Result<(), Sdk
         )));
     }
 
-    // --- Rule 3: member arity ---
     let a_tags: Vec<&Tag> = tags.iter().filter(|t| tag_name(t) == Some("a")).collect();
+
+    // --- Rule 3: member cap (checked before per-tag parsing, matching relay rule order) ---
+    if a_tags.len() > PROJECT_MEMBER_CAP {
+        return Err(SdkError::InvalidInput(format!(
+            "project exceeds member cap of {PROJECT_MEMBER_CAP} (got {}) (rule: member-cap)",
+            a_tags.len()
+        )));
+    }
+
+    // --- Rule 4: member arity ---
     for a in &a_tags {
         let len = a.as_slice().len() - 1; // exclude the "a" name element
         if !(1..=2).contains(&len) {
@@ -2013,15 +2023,7 @@ pub fn validate_project_envelope(tags: &[Tag], _content: &str) -> Result<(), Sdk
         }
     }
 
-    // --- Rule 6: cap (checked before dedup per spec ordering) ---
-    if a_tags.len() > PROJECT_MEMBER_CAP {
-        return Err(SdkError::InvalidInput(format!(
-            "project exceeds member cap of {PROJECT_MEMBER_CAP} (got {}) (rule: member-cap)",
-            a_tags.len()
-        )));
-    }
-
-    // --- Rules 4 & 5: coordinate grammar + deduplication ---
+    // --- Rules 5 & 6: coordinate grammar + deduplication ---
     let mut seen_coords: std::collections::HashSet<String> = std::collections::HashSet::new();
     for a in &a_tags {
         let coord_val = tag_value(a).unwrap_or("");
@@ -4253,6 +4255,46 @@ mod tests {
             .tags
             .iter()
             .any(|t| t.as_slice().first().map(String::as_str) == Some("replaced-by")));
+    }
+
+    // ── NIP-MP cap-before-arity ordering ─────────────────────────────────────
+
+    /// When an envelope exceeds the member cap AND contains a malformed `a` tag,
+    /// the validator must fire `member-cap` (rule 3) — not `member-tag-arity`
+    /// (rule 4).  This matches the relay's ingest ordering and means a client
+    /// sending an oversized list never receives a per-tag parse error.
+    #[test]
+    fn validate_project_envelope_cap_wins_over_arity_when_both_fail() {
+        let owner = "a".repeat(64);
+        // Build 65 well-formed `a` tags — enough to trigger the cap.
+        let mut tags = vec![Tag::parse(["d", "platform"]).unwrap()];
+        for i in 0..65usize {
+            let coord = format!("30617:{owner}:repo-{i}");
+            tags.push(Tag::parse(["a", &coord]).unwrap());
+        }
+        // Also add one malformed tag (four elements) that would fire
+        // member-tag-arity if evaluated before the cap check.
+        let coord_extra = format!("30617:{owner}:repo-extra");
+        tags.push(
+            Tag::parse([
+                "a",
+                &coord_extra,
+                "wss://relay.example.com",
+                "extra-element",
+            ])
+            .unwrap(),
+        );
+
+        let err = validate_project_envelope(&tags, "").unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("member-cap"),
+            "expected member-cap to win, got: {msg}"
+        );
+        assert!(
+            !msg.contains("member-tag-arity"),
+            "arity rule must not fire before cap rule, got: {msg}"
+        );
     }
 
     // ── NIP-MP conformance fixtures ──────────────────────────────────────────
