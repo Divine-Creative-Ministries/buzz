@@ -361,6 +361,14 @@ export function DefaultConfigStep({
         >
           Back
         </Button>
+
+        <p className="text-xs text-foreground/50">
+          Configure default models in{" "}
+          <span className="text-foreground/70 underline underline-offset-2">
+            Settings → Agents
+          </span>{" "}
+          after setup.
+        </p>
       </OnboardingFooter>
     </OnboardingSlideTransition>
   );

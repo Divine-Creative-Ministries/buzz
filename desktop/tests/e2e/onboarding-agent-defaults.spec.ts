@@ -606,6 +606,11 @@ test("defaults stages auto-selection and edits without writing when skipped", as
     .getByTestId("global-agent-model-option-claude-opus-4-20250514")
     .click();
   expect(await readGlobalConfigSetterCallCount(page)).toBe(0);
+  await expect(
+    page.getByText(
+      "Configure default models in Settings → Agents after setup.",
+    ),
+  ).toBeVisible();
 
   await page.getByTestId("onboarding-config-skip").click();
 
