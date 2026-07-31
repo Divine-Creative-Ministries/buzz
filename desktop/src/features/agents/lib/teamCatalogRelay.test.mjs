@@ -1,0 +1,1070 @@
+import assert from "node:assert/strict";
+import test, { mock } from "node:test";
+
+import { relayClient } from "@/shared/api/relayClient";
+import { emojiAvatarDataUrl } from "@/features/profile/ui/ProfileAvatarEditor.utils.ts";
+import {
+  catalogTeamsFromPublications,
+  fetchTeamCatalogPublications,
+  parseTeamCatalogContent,
+  teamCatalogPublicationsFromEvents,
+} from "./teamCatalogRelay.ts";
+import {
+  teamAutoRetractedNotice,
+  teamCatalogCopy,
+} from "../ui/teamLibraryCopy.ts";
+
+const ALICE = "a".repeat(64);
+const BOB = "b".repeat(64);
+
+function member(overrides = {}) {
+  return {
+    member_key: "reviewer",
+    display_name: "Relay Reviewer",
+    system_prompt: "Review changes.",
+    avatar_url: null,
+    runtime: "goose",
+    model: "claude",
+    ...overrides,
+  };
+}
+
+function teamEvent({
+  createdAt = 1,
+  id = "alice-team",
+  owner = ALICE,
+  teamDTag = "squad",
+  kind = 30178,
+  shared = true,
+  sharedTag,
+  members = [member()],
+  content,
+  version = 1,
+  name = "Review Squad",
+}) {
+  return {
+    id,
+    pubkey: owner,
+    created_at: createdAt,
+    kind,
+    tags: [
+      ["d", teamDTag],
+      ...(shared
+        ? [sharedTag ?? ["shared", "true"]]
+        : sharedTag
+          ? [sharedTag]
+          : []),
+    ],
+    content:
+      content ??
+      JSON.stringify({
+        v: version,
+        name,
+        description: "Reviews everything.",
+        instructions: "Be thorough.",
+        members,
+      }),
+    sig: "sig",
+  };
+}
+
+function localTeam(overrides = {}) {
+  return {
+    id: "local-1",
+    name: "Review Squad",
+    description: null,
+    instructions: null,
+    personaIds: [],
+    isBuiltin: false,
+    shared: false,
+    catalogSource: null,
+    sourceDir: null,
+    isSymlink: false,
+    symlinkTarget: null,
+    version: null,
+    createdAt: "2026-07-30T00:00:00.000Z",
+    updatedAt: "2026-07-30T00:00:00.000Z",
+    ...overrides,
+  };
+}
+
+test("test_shared_team_projection_is_discoverable_with_its_members", () => {
+  const publications = teamCatalogPublicationsFromEvents([teamEvent({})]);
+
+  assert.equal(publications.length, 1);
+  assert.equal(publications[0].name, "Review Squad");
+  assert.equal(publications[0].ownerPubkey, ALICE);
+  assert.equal(publications[0].teamDTag, "squad");
+  assert.equal(publications[0].eventId, "alice-team");
+  assert.equal(publications[0].members.length, 1);
+  assert.equal(publications[0].members[0].memberKey, "reviewer");
+  assert.equal(publications[0].members[0].displayName, "Relay Reviewer");
+});
+
+// A team's own wire body (30176) shares the coordinate namespace with its
+// catalog projection (30178) but is not a projection — reading one as the
+// other would show the community a body it never opted into publishing.
+test("test_team_wire_kind_is_not_read_as_a_catalog_projection", () => {
+  assert.deepEqual(
+    teamCatalogPublicationsFromEvents([teamEvent({ kind: 30176 })]),
+    [],
+  );
+});
+
+test("test_unshared_newer_head_hides_the_older_shared_team", () => {
+  const publications = teamCatalogPublicationsFromEvents([
+    teamEvent({ createdAt: 1, id: "shared" }),
+    teamEvent({ createdAt: 2, id: "retracted", shared: false }),
+  ]);
+
+  assert.deepEqual(publications, []);
+});
+
+test("test_only_an_exact_shared_true_tag_opts_a_team_into_discovery", () => {
+  for (const [index, sharedTag] of [
+    ["shared"],
+    ["shared", "false"],
+    ["shared", "true", "extra"],
+  ].entries()) {
+    const event = teamEvent({
+      createdAt: index + 2,
+      id: `malformed-${index}`,
+      shared: false,
+      sharedTag,
+    });
+    assert.deepEqual(teamCatalogPublicationsFromEvents([event]), []);
+  }
+
+  const duplicate = teamEvent({ createdAt: 5, id: "duplicate" });
+  duplicate.tags.push(["shared", "true"]);
+  assert.deepEqual(teamCatalogPublicationsFromEvents([duplicate]), []);
+});
+
+// Two `d` tags name two coordinates; the relay's ingest rule rejects that
+// shape, so honouring the first here would resolve a coordinate the publisher
+// never claimed.
+test("test_two_d_tags_make_a_head_unaddressable", () => {
+  const ambiguous = teamEvent({ id: "ambiguous" });
+  ambiguous.tags.push(["d", "other-squad"]);
+
+  assert.deepEqual(teamCatalogPublicationsFromEvents([ambiguous]), []);
+});
+
+test("test_unparsable_head_does_not_resurrect_an_older_shared_team", () => {
+  const publications = teamCatalogPublicationsFromEvents([
+    teamEvent({ createdAt: 1, id: "older-valid" }),
+    teamEvent({ createdAt: 2, id: "b".repeat(64), content: "{}" }),
+  ]);
+
+  assert.deepEqual(publications, []);
+});
+
+// A future body may legally reshape any field, so rendering whatever happens
+// to parse as v1 would present a corrupted team as a valid one.
+test("test_unknown_schema_version_is_rejected_rather_than_best_effort_parsed", () => {
+  assert.deepEqual(
+    teamCatalogPublicationsFromEvents([teamEvent({ version: 2 })]),
+    [],
+  );
+  assert.deepEqual(
+    teamCatalogPublicationsFromEvents([
+      teamEvent({
+        content: JSON.stringify({ name: "Review Squad", members: [] }),
+      }),
+    ]),
+    [],
+    "a body with no version at all is not implicitly v1",
+  );
+});
+
+// Invalid members are counted, not dropped: a team with invalid members is
+// shown with a diagnostic and the Add button disabled, so the user can see
+// what is wrong without losing visibility of the team.
+test("test_one_invalid_member_key_counts_as_invalid_not_drop", () => {
+  const publications = teamCatalogPublicationsFromEvents([
+    teamEvent({
+      members: [member(), member({ member_key: "", display_name: "Nameless" })],
+    }),
+  ]);
+
+  assert.equal(publications.length, 1, "team is still shown");
+  assert.equal(
+    publications[0].invalidMemberCount,
+    1,
+    "one invalid member counted",
+  );
+  assert.equal(publications[0].members.length, 1, "only valid member rendered");
+});
+
+test("test_member_missing_a_display_name_counts_as_invalid_not_drop", () => {
+  const publications = teamCatalogPublicationsFromEvents([
+    teamEvent({ members: [member({ display_name: "   " })] }),
+  ]);
+  assert.equal(publications.length, 1, "team is still shown");
+  assert.equal(publications[0].invalidMemberCount, 1);
+  assert.equal(publications[0].members.length, 0);
+});
+
+test("test_a_team_with_no_members_is_still_a_valid_projection", () => {
+  const publications = teamCatalogPublicationsFromEvents([
+    teamEvent({ members: [] }),
+  ]);
+
+  assert.equal(publications.length, 1);
+  assert.deepEqual(publications[0].members, []);
+});
+
+/** The avatar a member projects for `avatarUrl`, or null if dropped/invalid. */
+function memberAvatarUrl(avatarUrl) {
+  const publications = teamCatalogPublicationsFromEvents([
+    teamEvent({ members: [member({ avatar_url: avatarUrl })] }),
+  ]);
+  // When the avatar URL fails memberPassesV1, the member is invalid and not
+  // rendered. Return a sentinel so callers can distinguish "valid member with
+  // null avatar" from "invalid member" in assertions.
+  if (publications[0].members.length === 0) {
+    return { invalid: true };
+  }
+  return publications[0].members[0].avatarUrl;
+}
+
+// A team embeds N member avatars, so it must be held to exactly the persona
+// allowlist rather than the permissive string read it started with.
+test("test_member_avatars_keep_bounded_http_urls_and_reject_unsafe_schemes", () => {
+  assert.equal(
+    memberAvatarUrl("https://relay.example/avatar.png"),
+    "https://relay.example/avatar.png",
+  );
+  // Unsafe avatar URLs now mark the member as INVALID (not just drop the URL),
+  // so Add is disabled at the source rather than showing a blank avatar.
+  assert.deepEqual(
+    memberAvatarUrl("javascript:alert(1)"),
+    { invalid: true },
+    "javascript: avatar must mark the member invalid",
+  );
+  assert.deepEqual(
+    memberAvatarUrl(`data:image/svg+xml;base64,${btoa("<svg/>")}`),
+    { invalid: true },
+    "svg+xml;base64 is not in the safe allowlist — must mark the member invalid",
+  );
+  assert.deepEqual(
+    memberAvatarUrl("data:image/png,%89PNG"),
+    { invalid: true },
+    "non-base64 data URL must mark the member invalid",
+  );
+});
+
+test("test_percent_encoded_emoji_member_avatar_survives_the_catalog", () => {
+  const emojiAvatar = emojiAvatarDataUrl("🐝", "#FFCC00");
+
+  assert.equal(memberAvatarUrl(emojiAvatar), emojiAvatar);
+});
+
+test("test_oversized_inline_svg_member_avatar_is_rejected", () => {
+  const withinCap = `data:image/svg+xml,${"a".repeat(8_192 - "data:image/svg+xml,".length)}`;
+  assert.equal(withinCap.length, 8_192);
+  // An inline SVG avatar within the cap must render (member is valid).
+  assert.equal(memberAvatarUrl(withinCap), withinCap);
+  // One byte over the cap makes the avatar unsafe → member is invalid.
+  assert.deepEqual(
+    memberAvatarUrl(`${withinCap}a`),
+    { invalid: true },
+    "oversized SVG avatar must mark the member invalid",
+  );
+});
+
+test("test_team_coordinates_remain_independent_across_publishers", () => {
+  const publications = teamCatalogPublicationsFromEvents([
+    teamEvent({ id: "alice", owner: ALICE }),
+    teamEvent({ id: "bob", owner: BOB }),
+  ]);
+
+  assert.equal(publications.length, 2);
+});
+
+test("test_own_publication_resolves_to_the_local_team_by_id", () => {
+  const publications = teamCatalogPublicationsFromEvents([teamEvent({})]);
+  const own = localTeam({ id: "squad", shared: true });
+
+  const teams = catalogTeamsFromPublications(publications, [own], ALICE);
+
+  assert.equal(teams[0].isOwn, true);
+  assert.equal(teams[0].localTeam.id, "squad");
+});
+
+// The duplicate-add bug: a copy carries a fresh local id, so only the stored
+// coordinate links it back to the publication it came from.
+test("test_added_foreign_entry_resolves_to_its_local_copy", () => {
+  const publications = teamCatalogPublicationsFromEvents([teamEvent({})]);
+  const copy = localTeam({
+    id: "a-fresh-uuid",
+    catalogSource: { ownerPubkey: ALICE, teamDTag: "squad" },
+  });
+
+  const teams = catalogTeamsFromPublications(publications, [copy], BOB);
+
+  assert.equal(teams[0].isOwn, false);
+  assert.equal(teams[0].localTeam.id, "a-fresh-uuid");
+});
+
+test("test_foreign_entry_with_no_local_copy_has_no_local_team", () => {
+  const publications = teamCatalogPublicationsFromEvents([teamEvent({})]);
+  // A same-named local team with no provenance is a different team.
+  const unrelated = localTeam({ id: "unrelated" });
+
+  const teams = catalogTeamsFromPublications(publications, [unrelated], BOB);
+
+  assert.equal(teams[0].localTeam, null);
+});
+
+// Provenance is per-owner: the same d-tag under a different publisher is a
+// different team, so a copy of Alice's must not mask Bob's entry.
+test("test_catalog_source_match_is_scoped_to_the_publishing_owner", () => {
+  const publications = teamCatalogPublicationsFromEvents([
+    teamEvent({ id: "bob-team", owner: BOB }),
+  ]);
+  const copyOfAlices = localTeam({
+    id: "copy-of-alices",
+    catalogSource: { ownerPubkey: ALICE, teamDTag: "squad" },
+  });
+
+  const teams = catalogTeamsFromPublications(
+    publications,
+    [copyOfAlices],
+    ALICE,
+  );
+
+  assert.equal(teams[0].localTeam, null);
+});
+
+// An own team's `d`-tag is its local id, so an id match under another
+// publisher's coordinate must not read as already-added.
+test("test_local_id_match_under_a_foreign_owner_is_not_a_local_copy", () => {
+  const publications = teamCatalogPublicationsFromEvents([
+    teamEvent({ owner: BOB, teamDTag: "squad" }),
+  ]);
+  const sameId = localTeam({ id: "squad" });
+
+  const teams = catalogTeamsFromPublications(publications, [sameId], ALICE);
+
+  assert.equal(teams[0].isOwn, false);
+  assert.equal(teams[0].localTeam, null);
+});
+
+test("test_identity_pubkey_case_does_not_change_ownership", () => {
+  const publications = teamCatalogPublicationsFromEvents([teamEvent({})]);
+
+  const teams = catalogTeamsFromPublications(
+    publications,
+    [],
+    ALICE.toUpperCase(),
+  );
+
+  assert.equal(teams[0].isOwn, true);
+});
+
+test("test_catalog_entries_are_sorted_by_name", () => {
+  const publications = teamCatalogPublicationsFromEvents([
+    teamEvent({ id: "zed", teamDTag: "zed", name: "Zed Squad" }),
+    teamEvent({ id: "ace", teamDTag: "ace", name: "Ace Squad" }),
+  ]);
+
+  const teams = catalogTeamsFromPublications(publications, [], BOB);
+
+  assert.deepEqual(
+    teams.map((team) => team.name),
+    ["Ace Squad", "Zed Squad"],
+  );
+});
+
+function pageOfEvents(count, startId, createdAt) {
+  return Array.from({ length: count }, (_, index) =>
+    teamEvent({
+      createdAt: typeof createdAt === "function" ? createdAt(index) : createdAt,
+      id: `event-${startId + index}`,
+      teamDTag: `squad-${startId + index}`,
+    }),
+  );
+}
+
+function stubPagedRelay(pages) {
+  const filters = [];
+  mock.method(relayClient, "fetchEvents", (filter) => {
+    filters.push(filter);
+    return Promise.resolve(pages[filters.length - 1] ?? []);
+  });
+  return filters;
+}
+
+// A single limit-capped fetch drops every team past the relay's clamp, making
+// those teams undiscoverable.
+test("test_team_catalog_paging_requests_kind_30178_and_follows_full_pages", async (t) => {
+  t.after(() => mock.restoreAll());
+  const filters = stubPagedRelay([
+    pageOfEvents(500, 0, (index) => 10_000 - index),
+    pageOfEvents(3, 500, 9_000),
+  ]);
+
+  const publications = await fetchTeamCatalogPublications();
+
+  assert.deepEqual(filters[0].kinds, [30178]);
+  assert.equal(filters.length, 2, "a full page must be followed by another");
+  assert.equal(filters[0].until, undefined, "the first page has no cursor");
+  assert.equal(
+    filters[1].until,
+    10_000 - 499,
+    "the cursor must be the oldest created_at from the previous page",
+  );
+  assert.equal(publications.length, 503);
+});
+
+test("test_short_first_team_page_does_not_issue_a_second_request", async (t) => {
+  t.after(() => mock.restoreAll());
+  const filters = stubPagedRelay([pageOfEvents(2, 0, 10_000)]);
+
+  const publications = await fetchTeamCatalogPublications();
+
+  assert.equal(filters.length, 1);
+  assert.equal(publications.length, 2);
+});
+
+// ── parseTeamCatalogContent: v1 validation contract ───────────────────────
+
+function contentEvent(body) {
+  return {
+    id: "evt1",
+    pubkey: ALICE,
+    created_at: 1,
+    kind: 30178,
+    tags: [
+      ["d", "squad"],
+      ["shared", "true"],
+    ],
+    content: JSON.stringify(body),
+    sig: "sig",
+  };
+}
+
+function validBody(memberOverrides = {}) {
+  return {
+    v: 1,
+    name: "Review Squad",
+    members: [
+      {
+        member_key: "mk1",
+        display_name: "Agent One",
+        system_prompt: "Do it.",
+        ...memberOverrides,
+      },
+    ],
+  };
+}
+
+test("test_valid_body_yields_zero_invalid_members", () => {
+  const result = parseTeamCatalogContent(contentEvent(validBody()));
+  assert.ok(result !== null);
+  assert.equal(result.invalidMemberCount, 0);
+  assert.equal(result.members.length, 1);
+});
+
+test("test_wrong_schema_version_returns_null", () => {
+  const result = parseTeamCatalogContent(
+    contentEvent({ ...validBody(), v: 2 }),
+  );
+  assert.equal(result, null);
+});
+
+test("test_member_count_cap_exceeded_returns_null", () => {
+  const manyMembers = Array.from({ length: 65 }, (_, i) => ({
+    member_key: `k${i}`,
+    display_name: `Agent ${i}`,
+  }));
+  const result = parseTeamCatalogContent(
+    contentEvent({ v: 1, name: "Big Team", members: manyMembers }),
+  );
+  assert.equal(result, null);
+});
+
+test("test_member_with_parallelism_out_of_range_counts_as_invalid", () => {
+  const result = parseTeamCatalogContent(
+    contentEvent(validBody({ parallelism: 999 })),
+  );
+  assert.ok(result !== null);
+  assert.equal(result.invalidMemberCount, 1, "parallelism 999 fails v1");
+  assert.equal(result.members.length, 0, "invalid member is not rendered");
+});
+
+test("test_parallelism_at_boundary_values_is_valid", () => {
+  const r1 = parseTeamCatalogContent(
+    contentEvent(validBody({ parallelism: 1 })),
+  );
+  assert.equal(r1?.invalidMemberCount, 0);
+  const r32 = parseTeamCatalogContent(
+    contentEvent(validBody({ parallelism: 32 })),
+  );
+  assert.equal(r32?.invalidMemberCount, 0);
+});
+
+test("test_member_with_unrecognized_respond_to_counts_as_invalid", () => {
+  const result = parseTeamCatalogContent(
+    contentEvent(validBody({ respond_to: "nobody" })),
+  );
+  assert.ok(result !== null);
+  assert.equal(result.invalidMemberCount, 1, "unknown respond_to fails v1");
+});
+
+test("test_recognized_respond_to_values_are_valid", () => {
+  for (const mode of ["owner-only", "anyone", "allowlist"]) {
+    const r = parseTeamCatalogContent(
+      contentEvent(validBody({ respond_to: mode })),
+    );
+    assert.equal(
+      r?.invalidMemberCount,
+      0,
+      `respond_to '${mode}' should be valid`,
+    );
+  }
+});
+
+test("test_member_missing_member_key_counts_as_invalid", () => {
+  const result = parseTeamCatalogContent(
+    contentEvent({ v: 1, name: "T", members: [{ display_name: "A" }] }),
+  );
+  assert.ok(result !== null);
+  assert.equal(result.invalidMemberCount, 1);
+});
+
+test("test_partial_builtin_hint_counts_as_invalid", () => {
+  // builtin_slug present but projection_hash absent
+  const result = parseTeamCatalogContent(
+    contentEvent(validBody({ builtin_slug: "fizz" })),
+  );
+  assert.ok(result !== null);
+  assert.equal(result.invalidMemberCount, 1, "half-pair hint must fail");
+});
+
+test("test_complete_builtin_hint_with_valid_sha256_is_valid", () => {
+  const hash = "a".repeat(64);
+  const result = parseTeamCatalogContent(
+    contentEvent(validBody({ builtin_slug: "fizz", projection_hash: hash })),
+  );
+  assert.ok(result !== null);
+  assert.equal(
+    result.invalidMemberCount,
+    0,
+    "complete hint with 64-char hex hash is valid",
+  );
+});
+
+test("test_multiple_invalid_members_accumulate_count", () => {
+  const body = {
+    v: 1,
+    name: "Mixed Team",
+    members: [
+      { member_key: "k1", display_name: "Good", system_prompt: "OK" },
+      { member_key: "k2", display_name: "Bad", parallelism: 0 },
+      { member_key: "k3", display_name: "Also Bad", respond_to: "???" },
+    ],
+  };
+  const result = parseTeamCatalogContent(contentEvent(body));
+  assert.ok(result !== null);
+  assert.equal(result.invalidMemberCount, 2, "two invalid members");
+  assert.equal(result.members.length, 1, "one valid member rendered");
+  assert.equal(result.members[0].displayName, "Good");
+});
+
+test("test_name_too_long_returns_null", () => {
+  const longName = "x".repeat(300); // 300 > 256 byte limit
+  const result = parseTeamCatalogContent(
+    contentEvent({ v: 1, name: longName, members: [] }),
+  );
+  assert.equal(result, null, "oversize name must return null");
+});
+
+test("test_description_too_long_returns_null", () => {
+  const body = {
+    v: 1,
+    name: "T",
+    description: "x".repeat(5000), // > 4*1024
+    members: [],
+  };
+  assert.equal(parseTeamCatalogContent(contentEvent(body)), null);
+});
+
+// ── parseMember: provider field ───────────────────────────────────────────
+
+test("test_parseMember_provider_field_is_forwarded_when_present", () => {
+  const publications = teamCatalogPublicationsFromEvents([
+    teamEvent({ members: [member({ provider: "anthropic" })] }),
+  ]);
+  assert.equal(publications.length, 1);
+  assert.equal(publications[0].members.length, 1);
+  assert.equal(publications[0].members[0].provider, "anthropic");
+});
+
+test("test_parseMember_provider_field_is_null_when_absent", () => {
+  // member() does not set provider; parseMember must return null for it.
+  const publications = teamCatalogPublicationsFromEvents([
+    teamEvent({ members: [member()] }),
+  ]);
+  assert.equal(publications[0].members[0].provider, null);
+});
+
+test("test_parseMember_provider_whitespace_only_marks_member_invalid", () => {
+  // memberPassesV1 rejects a present whitespace-only provider string the same
+  // way it rejects whitespace-only runtime/model — the member is invalid.
+  const publications = teamCatalogPublicationsFromEvents([
+    teamEvent({ members: [member({ provider: "   " })] }),
+  ]);
+  assert.equal(
+    publications[0].members.length,
+    0,
+    "invalid member not rendered",
+  );
+  assert.equal(publications[0].invalidMemberCount, 1, "counted as invalid");
+});
+
+// ── F8: share disclosure copy contract ───────────────────────────────────
+// Both team instructions AND member instructions are published as plaintext.
+// The copy must name both to satisfy the explicit disclosure requirement.
+
+test("test_share_disclosure_names_team_instructions", () => {
+  assert.ok(
+    teamCatalogCopy.shareDescription
+      .toLowerCase()
+      .includes("team instructions"),
+    "disclosure must mention team instructions",
+  );
+});
+
+test("test_share_disclosure_names_member_instructions", () => {
+  assert.ok(
+    teamCatalogCopy.shareDescription.toLowerCase().includes("member"),
+    "disclosure must mention member instructions",
+  );
+  assert.ok(
+    teamCatalogCopy.shareDescription.toLowerCase().includes("instructions"),
+    "disclosure must explicitly say instructions are shared",
+  );
+});
+
+// ── Shared JSON fixture matrix (I8) ──────────────────────────────────────────
+// These fixtures are the canonical source of truth shared with the Rust test
+// suite.  Any divergence surfaces as a failing test in CI on the side that
+// disagrees.
+
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import path from "node:path";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const FIXTURES = path.join(
+  __dirname,
+  "../../../../src-tauri/tests/fixtures/team_catalog_content",
+);
+
+function fixtureEvent(name) {
+  const content = readFileSync(path.join(FIXTURES, name), "utf8").trim();
+  return {
+    id: "evt-fixture",
+    pubkey: ALICE,
+    created_at: 1,
+    kind: 30178,
+    tags: [
+      ["d", "squad"],
+      ["shared", "true"],
+    ],
+    content,
+    sig: "sig",
+  };
+}
+
+// Valid fixtures
+
+test("test_fixture_valid_minimal_is_accepted", () => {
+  assert.ok(
+    parseTeamCatalogContent(fixtureEvent("valid_minimal.json")) !== null,
+    "valid_minimal.json must be accepted",
+  );
+});
+
+test("test_fixture_valid_respond_to_owner_only_is_accepted", () => {
+  assert.ok(
+    parseTeamCatalogContent(
+      fixtureEvent("valid_respond_to_owner_only.json"),
+    ) !== null,
+    "valid_respond_to_owner_only.json must be accepted",
+  );
+});
+
+test("test_fixture_valid_respond_to_allowlist_is_accepted", () => {
+  assert.ok(
+    parseTeamCatalogContent(fixtureEvent("valid_respond_to_allowlist.json")) !==
+      null,
+    "valid_respond_to_allowlist.json must be accepted",
+  );
+});
+
+test("test_fixture_valid_respond_to_anyone_is_accepted", () => {
+  assert.ok(
+    parseTeamCatalogContent(fixtureEvent("valid_respond_to_anyone.json")) !==
+      null,
+    "valid_respond_to_anyone.json must be accepted",
+  );
+});
+
+test("test_fixture_valid_uppercase_hash_is_accepted", () => {
+  // The Rust validator accepts uppercase hex; the TS validator must also accept
+  // it so the hash-case acceptance is aligned (I8).
+  const result = parseTeamCatalogContent(
+    fixtureEvent("valid_uppercase_hash.json"),
+  );
+  assert.ok(result !== null, "valid_uppercase_hash.json must be accepted");
+});
+
+// Invalid fixtures
+
+test("test_fixture_invalid_respond_to_pascal_case_is_rejected", () => {
+  // The wire protocol uses kebab-case; "OwnerOnly" is the pre-fix TS value.
+  // Both validators reject it, but with different granularity: Rust rejects
+  // the whole body; TS marks the member invalid and increments invalidMemberCount.
+  const result = parseTeamCatalogContent(
+    fixtureEvent("invalid_respond_to_pascal_case.json"),
+  );
+  assert.ok(result !== null, "body with one invalid member is still parseable");
+  assert.ok(
+    result.invalidMemberCount >= 1,
+    "PascalCase respond_to must mark the member invalid",
+  );
+});
+
+test("test_fixture_invalid_description_wrong_type_is_rejected", () => {
+  assert.equal(
+    parseTeamCatalogContent(
+      fixtureEvent("invalid_description_wrong_type.json"),
+    ),
+    null,
+    "invalid_description_wrong_type.json must be rejected",
+  );
+});
+
+test("test_fixture_invalid_instructions_wrong_type_is_rejected", () => {
+  assert.equal(
+    parseTeamCatalogContent(
+      fixtureEvent("invalid_instructions_wrong_type.json"),
+    ),
+    null,
+    "invalid_instructions_wrong_type.json must be rejected",
+  );
+});
+
+test("test_fixture_invalid_duplicate_member_key_is_rejected", () => {
+  // Two members sharing a member_key must cause both validators to reject
+  // the body entirely.  The TS side counts the duplicate as invalid;
+  // since there is no valid member left in a 2-member body with one valid
+  // and one duplicate, the function still returns a non-null result with
+  // invalidMemberCount = 1.  Use strictEqual on invalidMemberCount > 0.
+  const result = parseTeamCatalogContent(
+    fixtureEvent("invalid_duplicate_member_key.json"),
+  );
+  assert.ok(
+    result !== null,
+    "body with one unique + one duplicate key is parseable",
+  );
+  assert.ok(
+    result.invalidMemberCount >= 1,
+    "the duplicate member must increment invalidMemberCount",
+  );
+});
+
+test("test_fixture_invalid_name_pool_not_array_is_rejected", () => {
+  // name_pool must be an array when present; a bare string fails memberPassesV1
+  // and increments invalidMemberCount.  The TS validator routes wrong-typed
+  // member fields through invalidMemberCount (display-layer behavior); the
+  // Rust validator rejects the whole body at deserialization time.  Both agree
+  // the member is invalid; only the granularity of rejection differs.
+  const result = parseTeamCatalogContent(
+    fixtureEvent("invalid_name_pool_not_array.json"),
+  );
+  assert.ok(result !== null, "top-level body is still parseable");
+  assert.ok(
+    result.invalidMemberCount >= 1,
+    "name_pool non-array must mark the member as invalid",
+  );
+});
+
+test("test_fixture_invalid_name_pool_null_is_rejected", () => {
+  // name_pool: null is not absent — Rust rejects it at deserialization.
+  // TS must also reject it (null != absent; only undefined is absent).
+  const result = parseTeamCatalogContent(
+    fixtureEvent("invalid_name_pool_null.json"),
+  );
+  assert.ok(result !== null, "top-level body is still parseable");
+  assert.ok(
+    result.invalidMemberCount >= 1,
+    "name_pool: null must mark the member as invalid",
+  );
+});
+
+test("test_fixture_invalid_builtin_slug_wrong_type_is_rejected", () => {
+  // builtin_slug: 42 is a present wrong-typed value — must fail rather than
+  // being treated as absent. Both validators agree the member is invalid.
+  const result = parseTeamCatalogContent(
+    fixtureEvent("invalid_builtin_slug_wrong_type.json"),
+  );
+  assert.ok(result !== null, "top-level body is still parseable");
+  assert.ok(
+    result.invalidMemberCount >= 1,
+    "builtin_slug: 42 (wrong type) must mark the member as invalid",
+  );
+});
+
+test("test_fixture_invalid_avatar_url_javascript_is_rejected", () => {
+  // avatar_url: "javascript:alert(1)" passes the byte-length bound but uses
+  // an unsafe scheme. The TS validator must mark the member invalid so Add
+  // is disabled before the backend rejects the same head.
+  const result = parseTeamCatalogContent(
+    fixtureEvent("invalid_avatar_url_javascript.json"),
+  );
+  assert.ok(result !== null, "top-level body is still parseable");
+  assert.ok(
+    result.invalidMemberCount >= 1,
+    "javascript: avatar URL must mark the member as invalid",
+  );
+});
+
+test("test_fixture_valid_avatar_url_https_is_accepted", () => {
+  // A well-formed https:// avatar URL must pass both validators.
+  const result = parseTeamCatalogContent(
+    fixtureEvent("valid_avatar_url_https.json"),
+  );
+  assert.ok(result !== null, "valid_avatar_url_https.json must be accepted");
+  assert.equal(result.invalidMemberCount, 0, "https avatar must be valid");
+});
+
+// ── teamAutoRetractedNotice: backend payload format ───────────────────────
+//
+// The `team-catalog-auto-retracted` Tauri event carries `{ teamName, reason }`.
+// useAgentsDataRefresh builds a toast via teamAutoRetractedNotice, so the
+// payload contract — and the "queued" wording that distinguishes an enqueued
+// tombstone from a relay-confirmed removal — is tested here as a pure-
+// function unit test rather than a React rendering test.
+
+test("test_team_auto_retracted_notice_names_team_and_reason", () => {
+  const msg = teamAutoRetractedNotice(
+    "My Team",
+    "member instructions too large",
+  );
+  assert.ok(msg.includes("My Team"), "notice must name the affected team");
+  assert.ok(
+    msg.includes("member instructions too large"),
+    "notice must include the backend reason",
+  );
+});
+
+test("test_team_auto_retracted_notice_says_queued_not_removed", () => {
+  // The relay head may still be live until the flush loop publishes the
+  // tombstone.  The notice must say "queued for removal" — not "was removed".
+  const msg = teamAutoRetractedNotice("Alpha Team", "team no longer exists");
+  assert.ok(
+    !msg.includes("was removed"),
+    "notice must not claim the team is already gone from the relay",
+  );
+  assert.ok(
+    msg.includes("queued") ||
+      msg.includes("being removed") ||
+      msg.includes("can no longer be projected"),
+    `notice must reflect the pending-tombstone status; got: ${msg}`,
+  );
+});
+
+// ── Validator contract boundary fixtures ─────────────────────────────────
+//
+// Shared fixtures that exercise the exact cases where Rust and TypeScript
+// previously diverged: blank team names and HTTP/HTTPS URL constraints.
+
+test("test_fixture_invalid_team_name_blank_is_rejected_by_ts", () => {
+  // Blank/whitespace team name must be rejected — TS checks
+  // `parsed.name.trim().length > 0`.
+  const result = parseTeamCatalogContent(
+    fixtureEvent("invalid_team_name_blank.json"),
+  );
+  assert.equal(
+    result,
+    null,
+    "invalid_team_name_blank.json must be rejected by TS (null name fails top-level check)",
+  );
+});
+
+test("test_fixture_invalid_avatar_url_bare_https_is_rejected_by_ts", () => {
+  // Bare `https://` with no hostname must be rejected by TS `isSafeHttpUrl`
+  // (URL() constructor throws).
+  const result = parseTeamCatalogContent(
+    fixtureEvent("invalid_avatar_url_bare_https.json"),
+  );
+  assert.ok(result !== null, "top-level body is parseable");
+  assert.ok(
+    result.invalidMemberCount >= 1,
+    "bare https:// avatar URL must mark the member invalid",
+  );
+});
+
+test("test_fixture_invalid_avatar_url_whitespace_in_url_is_rejected_by_ts", () => {
+  // HTTPS URL with embedded whitespace must be rejected by TS `isSafeHttpUrl`.
+  const result = parseTeamCatalogContent(
+    fixtureEvent("invalid_avatar_url_whitespace_in_url.json"),
+  );
+  assert.ok(result !== null, "top-level body is parseable");
+  assert.ok(
+    result.invalidMemberCount >= 1,
+    "whitespace-in-URL avatar must mark the member invalid",
+  );
+});
+
+test("test_fixture_invalid_avatar_url_https_over_2048_is_rejected_by_ts", () => {
+  // HTTPS URL > 2 048 chars must be rejected by TS `isSafeHttpUrl` length cap.
+  const result = parseTeamCatalogContent(
+    fixtureEvent("invalid_avatar_url_https_over_2048.json"),
+  );
+  assert.ok(result !== null, "top-level body is parseable");
+  assert.ok(
+    result.invalidMemberCount >= 1,
+    "over-2048 HTTPS URL avatar must mark the member invalid",
+  );
+});
+
+// ── URL predicate parity (parse-based, UTF-8 byte cap) ───────────────────
+//
+// These fixtures verify that the Rust is_safe_catalog_avatar_url and the
+// TypeScript isSafeHttpUrl now share the same parser and length metric.
+
+test("test_fixture_invalid_avatar_url_malformed_port_is_rejected_by_ts", () => {
+  // https://a:b — "b" is not a valid port; new URL() throws.
+  const result = parseTeamCatalogContent(
+    fixtureEvent("invalid_avatar_url_malformed_port.json"),
+  );
+  assert.ok(result !== null, "top-level body is parseable");
+  assert.ok(
+    result.invalidMemberCount >= 1,
+    "malformed-port URL must mark the member invalid",
+  );
+});
+
+test("test_fixture_valid_avatar_url_uppercase_scheme_is_accepted_by_ts", () => {
+  // HTTPS://example.com — new URL() normalises the scheme; accepted.
+  // The old Rust code (starts_with lowercase) rejected this; new parse accepts it.
+  const result = parseTeamCatalogContent(
+    fixtureEvent("valid_avatar_url_uppercase_scheme.json"),
+  );
+  assert.ok(
+    result !== null,
+    "valid_avatar_url_uppercase_scheme.json must be parseable",
+  );
+  assert.equal(
+    result.invalidMemberCount,
+    0,
+    "uppercase-scheme URL must be accepted as valid",
+  );
+});
+
+test("test_fixture_valid_avatar_url_non_ascii_at_utf8_limit_is_accepted_by_ts", () => {
+  // https://a/ + 1019 é = 2048 UTF-8 bytes = at cap. byteLength accepts it.
+  const result = parseTeamCatalogContent(
+    fixtureEvent("valid_avatar_url_non_ascii_at_utf8_limit.json"),
+  );
+  assert.ok(result !== null, "non_ascii_at_utf8_limit must be parseable");
+  assert.equal(
+    result.invalidMemberCount,
+    0,
+    "URL exactly at 2048 UTF-8 bytes must be accepted",
+  );
+});
+
+test("test_fixture_invalid_avatar_url_non_ascii_over_utf8_limit_is_rejected_by_ts", () => {
+  // https://a/ + 1020 é = 2050 UTF-8 bytes > cap. byteLength rejects it.
+  // 1030 UTF-16 code units < 2048, so the old value.length check would have
+  // accepted it — this is the exact Thufir-reproduced split.
+  const result = parseTeamCatalogContent(
+    fixtureEvent("invalid_avatar_url_non_ascii_over_utf8_limit.json"),
+  );
+  assert.ok(result !== null, "top-level body is parseable");
+  assert.ok(
+    result.invalidMemberCount >= 1,
+    "URL 2050 UTF-8 bytes (but 1030 UTF-16 units) must mark the member invalid",
+  );
+});
+
+// ── WHATWG-parse parity fixtures ──────────────────────────────────────────
+//
+// These fixtures verify that the Rust fast-path removal and the exact
+// ECMAScript-`\s` whitespace predicate give both validators a single contract
+// by construction: byte cap → ECMAScript-\s/parens guard → WHATWG parse →
+// scheme check.
+
+test("test_fixture_valid_avatar_url_shorthand_scheme_is_accepted_by_ts", () => {
+  // http:example.com — no literal `://` prefix but new URL() normalizes it to
+  // http://example.com/.  Rust url::Url::parse implements the same WHATWG spec.
+  const result = parseTeamCatalogContent(
+    fixtureEvent("valid_avatar_url_shorthand_scheme.json"),
+  );
+  assert.ok(result !== null, "shorthand scheme fixture must be parseable");
+  assert.equal(
+    result.invalidMemberCount,
+    0,
+    "shorthand http:example.com must be accepted",
+  );
+});
+
+test("test_fixture_invalid_avatar_url_unicode_nbsp_is_rejected_by_ts", () => {
+  // https://example.com/U+00A0 — NBSP is matched by /[\s]/u; rejected before
+  // new URL() is called.
+  const result = parseTeamCatalogContent(
+    fixtureEvent("invalid_avatar_url_unicode_nbsp.json"),
+  );
+  assert.ok(result !== null, "top-level body is parseable");
+  assert.ok(
+    result.invalidMemberCount >= 1,
+    "NBSP (U+00A0) in URL must mark the member invalid",
+  );
+});
+
+test("test_fixture_invalid_avatar_url_unicode_em_space_is_rejected_by_ts", () => {
+  // https://example.com/U+2003 — EM SPACE is matched by /[\s]/u; rejected.
+  const result = parseTeamCatalogContent(
+    fixtureEvent("invalid_avatar_url_unicode_em_space.json"),
+  );
+  assert.ok(result !== null, "top-level body is parseable");
+  assert.ok(
+    result.invalidMemberCount >= 1,
+    "EM SPACE (U+2003) in URL must mark the member invalid",
+  );
+});
+
+test("test_fixture_invalid_avatar_url_unicode_bom_is_rejected_by_ts", () => {
+  // https://example.com/U+FEFF — BOM is matched by /[\s]/u; rejected.
+  // Rust char::is_whitespace() does NOT include U+FEFF — it is added
+  // explicitly to match this JS behavior.
+  const result = parseTeamCatalogContent(
+    fixtureEvent("invalid_avatar_url_unicode_bom.json"),
+  );
+  assert.ok(result !== null, "top-level body is parseable");
+  assert.ok(
+    result.invalidMemberCount >= 1,
+    "BOM (U+FEFF) in URL must mark the member invalid",
+  );
+});
+
+test("test_fixture_valid_avatar_url_unicode_nel_is_accepted_by_ts", () => {
+  // https://example.com/U+0085 — NEL is NOT matched by /[\s]/u (JS explicitly
+  // excludes it); new URL() percent-encodes it and succeeds.  This is the
+  // mirror of the Rust char::is_whitespace() exclusion.
+  const result = parseTeamCatalogContent(
+    fixtureEvent("valid_avatar_url_unicode_nel.json"),
+  );
+  assert.ok(result !== null, "NEL fixture must be parseable");
+  assert.equal(
+    result.invalidMemberCount,
+    0,
+    "NEL (U+0085) in URL must be accepted (JS \\s does not match it)",
+  );
+});

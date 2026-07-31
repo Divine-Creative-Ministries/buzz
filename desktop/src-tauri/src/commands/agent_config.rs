@@ -688,6 +688,7 @@ mod tests {
             source_team: None,
             source_team_persona_slug: None,
             catalog_source: None,
+            team_catalog_source: None,
             definition_respond_to: None,
             definition_respond_to_allowlist: Vec::new(),
             definition_parallelism: None,
@@ -714,6 +715,7 @@ mod tests {
             source_team: None,
             source_team_persona_slug: None,
             catalog_source: None,
+            team_catalog_source: None,
             env_vars: Default::default(),
             respond_to: None,
             respond_to_allowlist: Vec::new(),
@@ -996,7 +998,6 @@ mod tests {
         assert_eq!(entries[0].value, "databricks_v2");
         assert!(!entries[0].masked);
     }
-
     #[test]
     fn baked_env_api_key_is_masked() {
         let entries = baked_env_from_map(&[("ANTHROPIC_API_KEY", "sk-secret")]);
@@ -1004,7 +1005,6 @@ mod tests {
         assert_eq!(entries[0].value, "••••••");
         assert!(entries[0].masked);
     }
-
     #[test]
     fn baked_env_token_key_is_masked() {
         let entries = baked_env_from_map(&[("GITHUB_TOKEN", "ghp_secret")]);
