@@ -330,15 +330,27 @@ export function DefaultConfigStep({
       </div>
 
       <OnboardingFooter>
-        <Button
-          className={`${ONBOARDING_PRIMARY_CTA_CLASS} text-sm`}
-          data-testid="onboarding-finish"
-          disabled={!persistenceState.canComplete || isCompleting}
-          onClick={() => void handleComplete()}
-          type="button"
-        >
-          Next
-        </Button>
+        {/* Keep Next centered while the optional action sits beside it. */}
+        <div className="relative flex items-center justify-center">
+          <Button
+            className={`${ONBOARDING_PRIMARY_CTA_CLASS} text-sm`}
+            data-testid="onboarding-finish"
+            disabled={!persistenceState.canComplete || isCompleting}
+            onClick={() => void handleComplete()}
+            type="button"
+          >
+            Next
+          </Button>
+          <Button
+            className="absolute left-full ml-3 h-9 animate-in whitespace-nowrap rounded-full px-6 text-sm fade-in fill-mode-backwards [animation-delay:1000ms] animation-duration-[500ms] hover:bg-foreground/10 motion-reduce:animate-none"
+            data-testid="onboarding-config-skip"
+            onClick={actions.complete}
+            type="button"
+            variant="ghost"
+          >
+            Skip for now
+          </Button>
+        </div>
 
         <Button
           className="h-9 rounded-full bg-foreground/10 px-6 text-sm hover:bg-foreground/15"

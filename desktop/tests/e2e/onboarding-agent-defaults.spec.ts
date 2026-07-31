@@ -528,6 +528,66 @@ test("defaults keeps model control when optional harness discovery fails", async
   await expect(page.getByTestId("onboarding-finish")).toBeEnabled();
 });
 
+test("defaults can be skipped while loading without persisting configuration", async ({
+  page,
+}) => {
+  await installMockBridge(
+    page,
+    {
+      acpRuntimesCatalog: [
+        runtime("claude", "available", { status: "logged_in" }),
+      ],
+      bakedBuildEnvDelayMs: 500,
+      globalAgentConfig: {
+        env_vars: {},
+        provider: null,
+        model: null,
+        preferred_runtime: null,
+      },
+    },
+    { skipCommunitySeed: true, skipOnboardingSeed: true },
+  );
+  await page.goto("/");
+  await navigateToSetupPage(page);
+  await page.getByTestId("onboarding-setup-next").click();
+
+  await expect(page.getByText("Loading…")).toBeVisible();
+  await page.getByTestId("onboarding-config-skip").click();
+
+  await expect(page.getByText("Join or create a community")).toBeVisible();
+  expect(await readSavedRuntime(page)).toBeNull();
+});
+
+test("defaults can be skipped when configuration is incomplete", async ({
+  page,
+}) => {
+  await installMockBridge(
+    page,
+    {
+      acpRuntimesCatalog: [
+        runtime("claude", "available", { status: "logged_in" }),
+        runtime("codex", "available", { status: "logged_in" }),
+      ],
+      globalAgentConfig: {
+        env_vars: {},
+        provider: null,
+        model: null,
+        preferred_runtime: null,
+      },
+    },
+    { skipCommunitySeed: true, skipOnboardingSeed: true },
+  );
+  await page.goto("/");
+  await navigateToSetupPage(page);
+  await page.getByTestId("onboarding-setup-next").click();
+
+  await expect(page.getByTestId("onboarding-finish")).toBeDisabled();
+  await page.getByTestId("onboarding-config-skip").click();
+
+  await expect(page.getByText("Join or create a community")).toBeVisible();
+  expect(await readSavedRuntime(page)).toBeNull();
+});
+
 test("defaults Back returns to harness setup", async ({ page }) => {
   await installMockBridge(
     page,
