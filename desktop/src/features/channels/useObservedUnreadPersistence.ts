@@ -3,7 +3,6 @@ import {
   flushObservedUnreadWrite,
   pruneObservedUnreadByMarkers,
   readObservedUnreadFromStorage,
-  removeChannelFromObservedUnreadStorage,
   scheduleObservedUnreadWrite,
   deriveLatestByChannel,
   clearObservedUnreadStorage,
@@ -150,32 +149,32 @@ export function useObservedUnreadPersistence(
 
   const removeChannel = React.useCallback(
     (channelId: string) => {
-      if (!normalizedPubkey || !normalizedRelayUrl) return;
-      // Cancel any pending snapshot — the channel is now being cleared so the
-      // pending debounce snapshot (which still includes it) must not win.
-      if (timerRef.current !== null) {
-        clearTimeout(timerRef.current);
-        timerRef.current = null;
-      }
-      removeChannelFromObservedUnreadStorage(
-        normalizedPubkey,
-        normalizedRelayUrl,
-        channelId,
-      );
+      // Reject if the loaded scope has drifted — a stale callback during A→B
+      // transitions must not cancel B's pending snapshot or corrupt B's refs.
+      if (scopeLoadedRef.current !== currentScope) return;
+      // Delete from both in-memory refs so the projection no longer sees this
+      // channel. Then replace any pending snapshot with a new snapshot of the
+      // current full map — never cancel-without-replacement, which would lose
+      // unsaved sibling-channel events on the next reload.
+      observedUnreadEventsByChannelRef.current.delete(channelId);
+      latestByChannelRef.current.delete(channelId);
+      scheduleObservedUnreadWrite(currentScope, persistRefs.current);
     },
-    [normalizedPubkey, normalizedRelayUrl],
+    [currentScope, observedUnreadEventsByChannelRef, latestByChannelRef],
   );
 
   const clearAll = React.useCallback(() => {
-    if (!normalizedPubkey || !normalizedRelayUrl) return;
-    // Cancel any pending snapshot — mark-all clears storage so the pending
-    // debounce snapshot must not resurrect any channels.
+    // Reject if the loaded scope has drifted — a stale callback must not
+    // cancel the new scope's pending snapshot or clear the wrong bucket.
+    if (scopeLoadedRef.current !== currentScope) return;
+    // Cancel any pending snapshot — mark-all clears both in-memory refs and
+    // storage, so the pending debounce snapshot must not resurrect any channels.
     if (timerRef.current !== null) {
       clearTimeout(timerRef.current);
       timerRef.current = null;
     }
-    clearObservedUnreadStorage(normalizedPubkey, normalizedRelayUrl);
-  }, [normalizedPubkey, normalizedRelayUrl]);
+    clearObservedUnreadStorage(normalizedPubkey ?? "", normalizedRelayUrl);
+  }, [currentScope, normalizedPubkey, normalizedRelayUrl]);
 
   // isScopeLoaded reads the ref at call time — always fresh, never a stale
   // snapshot from a closed-over useMemo value.

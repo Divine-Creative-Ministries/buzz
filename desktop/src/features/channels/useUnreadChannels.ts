@@ -417,11 +417,14 @@ export function useUnreadChannels(
           isThreadedReply,
         }),
       );
+      // Fence latestByChannelRef on the scope guard — a stale live callback
+      // during A→B drift must not write A's timestamp into B's hydrated ref.
+      const scopeOk = observedPersistence.isScopeLoaded();
       const current = latestByChannelRef.current.get(channelId) ?? 0;
-      if (event.created_at > current) {
+      if (scopeOk && event.created_at > current) {
         latestByChannelRef.current.set(channelId, event.created_at);
-        bumpLatestVersion();
-      } else if (didRecordUnreadEvent) {
+      }
+      if (didRecordUnreadEvent || (scopeOk && event.created_at > current)) {
         bumpLatestVersion();
       }
 
@@ -443,6 +446,7 @@ export function useUnreadChannels(
     [
       callerOnChannelMessage,
       normalizedPubkey,
+      observedPersistence,
       recordMentionedRoot,
       recordUnreadEvent,
     ],
@@ -737,13 +741,9 @@ export function useUnreadChannels(
     ).then((results) => {
       if (isCancelled) return;
       // Guard: don't merge catch-up results into a ref whose scope has drifted
-      // (relay/pubkey changed while this async fetch was in flight). Also reject
-      // an empty scope for the same reason as the live writer above.
-      if (
-        !currentActivityScope ||
-        threadActivityScopeRef.current !== currentActivityScope
-      )
-        return;
+      // (relay/pubkey changed while this async fetch was in flight). Use the
+      // observed owner's loaded-scope predicate — one scope authority, not two.
+      if (!observedPersistence.isScopeLoaded()) return;
       let didAdvance = false;
       const allThreadReplies: ThreadActivityItem[] = [];
       for (const result of results) {

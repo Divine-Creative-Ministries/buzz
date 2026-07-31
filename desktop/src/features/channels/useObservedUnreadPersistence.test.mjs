@@ -484,9 +484,25 @@ test("clearAll cancels pending debounce so no resurrection after reload", async 
   await harness.unmount();
 });
 
-test("removeChannel cancels pending debounce so cleared channel is not resurrected", async () => {
+test("removeChannel replaces pending snapshot so sibling channel B survives reload", async () => {
   installFreshStorage();
-  const refs = makeRefs();
+
+  // Pre-seed storage with BOTH channel-1 and channel-2 so the hydration
+  // effect loads them into refs on mount.
+  const seedMap = new Map();
+  const ch1 = new Map();
+  ch1.set("evt-1", makeEvent("evt-1", "channel-1", NOW_S));
+  seedMap.set("channel-1", ch1);
+  const ch2 = new Map();
+  ch2.set("evt-2", makeEvent("evt-2", "channel-2", NOW_S + 1));
+  seedMap.set("channel-2", ch2);
+  writeObservedUnreadToStorage(PUBKEY, RELAY, seedMap);
+
+  const refs = {
+    eventsRef: { current: new Map() },
+    latestRef: { current: new Map() },
+  };
+
   const props = {
     pubkey: PUBKEY,
     relay: RELAY,
@@ -497,28 +513,57 @@ test("removeChannel cancels pending debounce so cleared channel is not resurrect
   };
 
   const harness = await mountHook(props, refs);
+
+  // After hydration, both channels are loaded into refs.
+  assert.ok(
+    refs.eventsRef.current.has("channel-1"),
+    "hydration must restore channel-1",
+  );
+  assert.ok(
+    refs.eventsRef.current.has("channel-2"),
+    "hydration must restore channel-2",
+  );
+
   const scope = harness.api.currentScope;
 
-  // Schedule a write (timer pending — snapshot includes channel-1).
+  // Schedule a write (timer pending — snapshot includes channel-1 AND channel-2).
   harness.api.schedule(scope);
 
-  // Remove channel-1 from storage before timer fires.
-  refs.eventsRef.current.delete("channel-1");
-  refs.latestRef.current.delete("channel-1");
+  // Remove channel-1 BEFORE the debounce fires.
+  // removeChannel must: (1) delete channel-1 from refs, (2) replace the
+  // pending snapshot with a new snapshot of the current full map (channel-2 only),
+  // so channel-2 events are never lost on the next reload.
   harness.api.removeChannel("channel-1");
 
-  // Flush via pagehide — should write the updated refs (channel-1 absent).
+  // channel-1 must be gone from refs immediately.
+  assert.ok(
+    !refs.eventsRef.current.has("channel-1"),
+    "channel-1 removed from refs",
+  );
+  // channel-2 must still be in refs.
+  assert.ok(
+    refs.eventsRef.current.has("channel-2"),
+    "channel-2 still in refs after removeChannel",
+  );
+
+  // Flush via pagehide — must write the post-removeChannel snapshot (channel-2 only).
   await act(async () => {
     globalThis.dispatchEvent({ type: "pagehide" });
   });
 
   const stored = readObservedUnreadFromStorage(PUBKEY, RELAY);
-  if (stored !== null) {
-    assert.ok(
-      !stored.has("channel-1"),
-      "channel-1 must not be resurrected after removeChannel + flush",
-    );
-  }
+  assert.ok(
+    stored !== null,
+    "storage must not be null — channel-2 events survive",
+  );
+  assert.ok(
+    !stored.has("channel-1"),
+    "channel-1 must not appear after removeChannel",
+  );
+  assert.ok(
+    stored.has("channel-2"),
+    "channel-2 must survive removeChannel(channel-1) — no cancel-without-replacement",
+  );
 
   await harness.unmount();
 });
@@ -630,22 +675,459 @@ test("isScopeLoaded returns false before identity-reset effect commits, true aft
     "isScopeLoaded must be true after mount+effects",
   );
 
-  // Switch identity — effects haven't committed yet but we check the return value.
-  // (In real React, the component would render once with the new scope before
-  // the effect commits. We test that isScopeLoaded() reads current ref state.)
-  // Manually back-date the loaded scope to simulate the pre-effect-commit render.
-  harness.api.scopeLoadedRef.current = "stale-scope";
-  assert.ok(
-    !harness.api.isScopeLoaded(),
-    "isScopeLoaded must be false when scope is stale",
-  );
-
-  // After effect commits (simulated by restoring the correct scope).
-  harness.api.scopeLoadedRef.current = harness.api.currentScope;
+  // Drive a real scope transition via re-render with a different pubkey.
+  // After act() settles, the hydration effect has committed the new scope.
+  const PUBKEY_B = "pubkey-b-scope-test";
+  await harness.render({ ...props, pubkey: PUBKEY_B });
   assert.ok(
     harness.api.isScopeLoaded(),
-    "isScopeLoaded must be true once effect commits",
+    "isScopeLoaded must be true after scope switch + effects committed",
   );
+  assert.ok(
+    harness.api.currentScope.includes(PUBKEY_B.toLowerCase()),
+    "currentScope must reflect the new pubkey",
+  );
+  // The loaded ref must match the new scope — any stale value would have been
+  // overwritten by the hydration effect.
+  assert.equal(
+    harness.api.scopeLoadedRef.current,
+    harness.api.currentScope,
+    "scopeLoadedRef must equal currentScope after effects commit",
+  );
+
+  await harness.unmount();
+});
+
+test("A→B late-timer: scheduled write owns immutable scope snapshot, not mutable refs", async () => {
+  // Prove that scheduleObservedUnreadWrite captures an immutable snapshot at
+  // schedule time, so a timer that fires AFTER a scope switch writes A's
+  // snapshot under A's key — not B's mutable refs under A's key.
+  //
+  // The important invariant: after A schedules a snapshot and we switch to B,
+  // the pending A-timer must be CANCELLED by the scope-switch flush (hydration
+  // effect), so its snapshot never lands after B's data is loaded.
+  installFreshStorage();
+
+  const PUBKEY_AT = "pubkey-a-t";
+  const RELAY_AT = "wss://relay-a-t.example.com";
+  const PUBKEY_BT = "pubkey-b-t";
+  const RELAY_BT = "wss://relay-b-t.example.com";
+
+  // Pre-seed A's storage so the hydration effect loads it into refs.
+  const seedMap = new Map();
+  const chAT = new Map();
+  chAT.set("evt-at", makeEvent("evt-at", "ch-at", NOW_S));
+  seedMap.set("ch-at", chAT);
+  writeObservedUnreadToStorage(PUBKEY_AT, RELAY_AT, seedMap);
+
+  const refsAT = {
+    eventsRef: { current: new Map() },
+    latestRef: { current: new Map() },
+  };
+
+  const propsAT = {
+    pubkey: PUBKEY_AT,
+    relay: RELAY_AT,
+    isReady: true,
+    readStateVersion: 0,
+    getTs: () => null,
+    getOwn: () => null,
+  };
+
+  const harness = await mountHook(propsAT, refsAT);
+
+  // After mount, hydration loaded the pre-seeded event into refs.
+  assert.ok(
+    refsAT.eventsRef.current.has("ch-at"),
+    "hydration must restore ch-at from storage",
+  );
+
+  const scopeAT = harness.api.currentScope;
+
+  // Schedule a write for scope A (1-second debounce — timer pending).
+  // The timer snapshot captures A's current event map (ch-at present).
+  harness.api.schedule(scopeAT);
+
+  // Switch to scope B BEFORE the timer fires. The hydration effect cleanup
+  // flushes A synchronously (cancelling the timer and writing A's snapshot),
+  // then resets refs to new Maps, then loads B's storage.
+  const propsBT = { ...propsAT, pubkey: PUBKEY_BT, relay: RELAY_BT };
+  await harness.render(propsBT);
+
+  // A's pending timer was cancelled during the flush — A's data is in storage
+  // from the synchronous flush, not from the timer.
+  const storedAT = readObservedUnreadFromStorage(PUBKEY_AT, RELAY_AT);
+  assert.ok(
+    storedAT?.has("ch-at"),
+    "A scope must be flushed on scope switch (synchronous flush in hydration effect cleanup)",
+  );
+
+  // B's bucket must NOT contain A's channel (no cross-scope contamination).
+  const storedBT = readObservedUnreadFromStorage(PUBKEY_BT, RELAY_BT);
+  if (storedBT !== null) {
+    assert.ok(
+      !storedBT.has("ch-at"),
+      "B's bucket must not contain A's channel after scope switch",
+    );
+  }
+
+  // Now seed B and schedule a B write. Flush via pagehide to advance it.
+  const chBT = new Map();
+  chBT.set("evt-bt", makeEvent("evt-bt", "ch-bt", NOW_S + 300));
+  refsAT.eventsRef.current.set("ch-bt", chBT);
+  refsAT.latestRef.current.set("ch-bt", NOW_S + 300);
+  harness.api.schedule(harness.api.currentScope); // B scope
+
+  await act(async () => {
+    globalThis.dispatchEvent({ type: "pagehide" });
+  });
+
+  const storedBT2 = readObservedUnreadFromStorage(PUBKEY_BT, RELAY_BT);
+  assert.ok(
+    storedBT2?.has("ch-bt"),
+    "B's scheduled write must survive as its own independent snapshot",
+  );
+
+  await harness.unmount();
+});
+
+test("stale clearAll from scope A rejects after scope B loads (scope fence enforced)", async () => {
+  installFreshStorage();
+
+  // Pre-seed A's storage so hydration effect picks it up (same pattern as A→B
+  // late-timer test — the hydration effect resets refs from storage, not from
+  // the pre-populated makeRefs()).
+  const seedA = new Map();
+  const chSeedA = new Map();
+  chSeedA.set("evt-seed-a", makeEvent("evt-seed-a", "channel-seed", NOW_S));
+  seedA.set("channel-seed", chSeedA);
+  writeObservedUnreadToStorage(PUBKEY, RELAY, seedA);
+
+  const refsA = {
+    eventsRef: { current: new Map() },
+    latestRef: { current: new Map() },
+  };
+  const propsA = {
+    pubkey: PUBKEY,
+    relay: RELAY,
+    isReady: true,
+    readStateVersion: 0,
+    getTs: () => null,
+    getOwn: () => null,
+  };
+
+  const harness = await mountHook(propsA, refsA);
+
+  // After mount, A's bucket is in storage (written by pre-seed).
+  const storedA_initial = readObservedUnreadFromStorage(PUBKEY, RELAY);
+  assert.ok(
+    storedA_initial !== null,
+    "A's bucket must be in storage after mount",
+  );
+
+  // Schedule a write so A has a pending timer — this tests that the stale
+  // clearAll doesn't cancel B's timer (not A's).
+  const scopeA = harness.api.currentScope;
+  harness.api.schedule(scopeA);
+
+  const PUBKEY_B = "pubkey-b2";
+  const RELAY_B = "wss://relay-b2.example.com";
+
+  // Capture scope A's clearAll before switching scopes.
+  const staleClearAll = harness.api.clearAll;
+
+  // Switch to scope B — effects flush A (persisting the pending snapshot), reset refs, load B.
+  await harness.render({ ...propsA, pubkey: PUBKEY_B, relay: RELAY_B });
+
+  // A's bucket should still have data from the flush.
+  const storedA_before = readObservedUnreadFromStorage(PUBKEY, RELAY);
+  assert.ok(storedA_before !== null, "A's bucket must survive scope switch");
+
+  // Calling the stale clearAll (captured under scope A) after scope B is loaded
+  // must be a no-op — scopeLoadedRef.current (=B) !== A scope in the closure.
+  staleClearAll();
+
+  const storedA_after = readObservedUnreadFromStorage(PUBKEY, RELAY);
+  assert.deepEqual(
+    storedA_after,
+    storedA_before,
+    "stale clearAll from scope A must not delete A's bucket after scope B loads",
+  );
+
+  await harness.unmount();
+});
+
+test("stale removeChannel from scope A rejects after scope B loads (scope fence enforced)", async () => {
+  installFreshStorage();
+
+  // Pre-seed A's storage so hydration picks it up.
+  const seedA = new Map();
+  const chSeedA = new Map();
+  chSeedA.set("evt-seed-a", makeEvent("evt-seed-a", "channel-seed", NOW_S));
+  seedA.set("channel-seed", chSeedA);
+  writeObservedUnreadToStorage(PUBKEY, RELAY, seedA);
+
+  const refsA = {
+    eventsRef: { current: new Map() },
+    latestRef: { current: new Map() },
+  };
+  const propsA = {
+    pubkey: PUBKEY,
+    relay: RELAY,
+    isReady: true,
+    readStateVersion: 0,
+    getTs: () => null,
+    getOwn: () => null,
+  };
+
+  const harness = await mountHook(propsA, refsA);
+
+  // Schedule a write for A so there is a pending timer.
+  const scopeA = harness.api.currentScope;
+  harness.api.schedule(scopeA);
+
+  const PUBKEY_B = "pubkey-b3";
+  const RELAY_B = "wss://relay-b3.example.com";
+
+  // Pre-seed B's storage with a different channel.
+  const seedB = new Map();
+  const chSeedB = new Map();
+  chSeedB.set("evt-seed-b", makeEvent("evt-seed-b", "channel-b", NOW_S));
+  seedB.set("channel-b", chSeedB);
+  writeObservedUnreadToStorage(PUBKEY_B, RELAY_B, seedB);
+
+  // Capture scope A's removeChannel before switching scopes.
+  const staleRemoveChannel = harness.api.removeChannel;
+
+  // Switch to scope B — effects flush A (persisting the pending snapshot), reset refs, load B.
+  await harness.render({ ...propsA, pubkey: PUBKEY_B, relay: RELAY_B });
+
+  // B's bucket is in storage after hydration.
+  const storedB_before = readObservedUnreadFromStorage(PUBKEY_B, RELAY_B);
+  assert.ok(
+    storedB_before !== null,
+    "B's bucket must be in storage after scope switch",
+  );
+
+  // Calling the stale removeChannel (captured under scope A) after scope B is
+  // loaded must be a no-op — scopeLoadedRef.current (=B) !== A scope.
+  staleRemoveChannel("channel-b");
+
+  const storedB_after = readObservedUnreadFromStorage(PUBKEY_B, RELAY_B);
+  assert.deepEqual(
+    storedB_after,
+    storedB_before,
+    "stale removeChannel from scope A must not delete channel-b from B's bucket",
+  );
+
+  await harness.unmount();
+});
+
+test("unrelated rerenders do not change API object identity (catch-up stability)", async () => {
+  installFreshStorage();
+  const refs = makeRefs();
+  const props = {
+    pubkey: PUBKEY,
+    relay: RELAY,
+    isReady: true,
+    readStateVersion: 0,
+    getTs: () => null,
+    getOwn: () => null,
+  };
+
+  const harness = await mountHook(props, refs);
+  const api1 = harness.api;
+  const schedule1 = api1.schedule;
+  const removeChannelAndPersistCurrent1 = api1.removeChannelAndPersistCurrent;
+  const clearAll1 = api1.clearAll;
+  const isScopeLoaded1 = api1.isScopeLoaded;
+
+  // Re-render with an unrelated prop change (readStateVersion bumped, same identity).
+  // This simulates what happens on every read-state advance in the parent.
+  await harness.render({ ...props, readStateVersion: 1 });
+
+  const api2 = harness.api;
+  // The API object must be the same reference — different readStateVersion is not
+  // a dep of the useMemo that builds the API (only scope-level deps are).
+  assert.equal(
+    api1,
+    api2,
+    "API object must be the same reference on unrelated rerender",
+  );
+  assert.equal(schedule1, api2.schedule, "schedule must be stable");
+  assert.equal(
+    removeChannelAndPersistCurrent1,
+    api2.removeChannelAndPersistCurrent,
+    "removeChannelAndPersistCurrent must be stable",
+  );
+  assert.equal(clearAll1, api2.clearAll, "clearAll must be stable");
+  assert.equal(
+    isScopeLoaded1,
+    api2.isScopeLoaded,
+    "isScopeLoaded must be stable",
+  );
+
+  await harness.unmount();
+});
+
+test("channel-level marker prune: channel marker removes all events in that channel", async () => {
+  installFreshStorage();
+
+  const eventsRef = { current: new Map() };
+  const latestRef = { current: new Map() };
+  // Seed channel-a: two events at NOW_S-20 and NOW_S-10.
+  // Channel read marker at NOW_S-5 covers both (they are <= marker).
+  const evtOld = {
+    id: "evt-old",
+    createdAt: NOW_S - 20,
+    rootId: "root-old",
+    highPriority: false,
+    countsTowardBadge: true,
+    countsTowardAppBadge: false,
+  };
+  const evtMid = {
+    id: "evt-mid",
+    createdAt: NOW_S - 10,
+    rootId: "root-mid",
+    highPriority: false,
+    countsTowardBadge: true,
+    countsTowardAppBadge: false,
+  };
+  // channel-b: one event at NOW_S+10 (newer than any marker — must survive).
+  const evtB = {
+    id: "evt-b",
+    createdAt: NOW_S + 10,
+    rootId: "root-b",
+    highPriority: false,
+    countsTowardBadge: true,
+    countsTowardAppBadge: false,
+  };
+
+  const stored = new Map();
+  const chA = new Map();
+  chA.set("evt-old", evtOld);
+  chA.set("evt-mid", evtMid);
+  stored.set("channel-a", chA);
+  const chB = new Map();
+  chB.set("evt-b", evtB);
+  stored.set("channel-b", chB);
+  writeObservedUnreadToStorage(PUBKEY, RELAY, stored);
+
+  let pruneCount = 0;
+
+  const harness = await mountHook(
+    {
+      pubkey: PUBKEY,
+      relay: RELAY,
+      isReady: false,
+      readStateVersion: 0,
+      getTs: () => null,
+      getOwn: () => null,
+    },
+    { eventsRef, latestRef },
+  );
+
+  // Re-render with a channel marker covering channel-a at NOW_S-5.
+  // getEffectiveTimestamp("channel-a") = NOW_S-5 covers evtOld (NOW_S-20) and evtMid (NOW_S-10).
+  // channel-b has no channel marker (returns null) and evtB is newer — survives.
+  await harness.render({
+    pubkey: PUBKEY,
+    relay: RELAY,
+    isReady: true,
+    readStateVersion: 1,
+    getTs: (channelId) => (channelId === "channel-a" ? NOW_S - 5 : null),
+    getOwn: () => null,
+    onPruned: () => {
+      pruneCount += 1;
+    },
+  });
+
+  assert.ok(
+    !eventsRef.current.has("channel-a"),
+    "channel-a must be fully pruned by channel marker",
+  );
+  assert.ok(
+    eventsRef.current.has("channel-b"),
+    "channel-b must survive — its event is newer than any marker",
+  );
+  assert.equal(pruneCount, 1, "onPruned must fire once");
+
+  await harness.unmount();
+});
+
+test("local-vs-synced marker equivalence: own-timestamp prune behaves identically to channel-level marker", async () => {
+  installFreshStorage();
+
+  const eventsRef = { current: new Map() };
+  const latestRef = { current: new Map() };
+  // Two events with the same rootId. getOwnTimestamp("thread:root-shared")
+  // covers them just like a channel marker would — same pruning result.
+  const evt1 = {
+    id: "evt1",
+    createdAt: NOW_S - 30,
+    rootId: "root-shared",
+    highPriority: false,
+    countsTowardBadge: true,
+    countsTowardAppBadge: false,
+  };
+  const evt2 = {
+    id: "evt2",
+    createdAt: NOW_S - 15,
+    rootId: "root-shared",
+    highPriority: false,
+    countsTowardBadge: true,
+    countsTowardAppBadge: false,
+  };
+  // evt3 has a different rootId and no matching marker — must survive.
+  const evt3 = {
+    id: "evt3",
+    createdAt: NOW_S - 5,
+    rootId: "root-other",
+    highPriority: false,
+    countsTowardBadge: true,
+    countsTowardAppBadge: false,
+  };
+
+  const storedMap = new Map();
+  const ch = new Map();
+  ch.set("evt1", evt1);
+  ch.set("evt2", evt2);
+  ch.set("evt3", evt3);
+  storedMap.set("ch-shared", ch);
+  writeObservedUnreadToStorage(PUBKEY, RELAY, storedMap);
+
+  let pruneCount = 0;
+
+  const harness = await mountHook(
+    {
+      pubkey: PUBKEY,
+      relay: RELAY,
+      isReady: false,
+      readStateVersion: 0,
+      getTs: () => null,
+      getOwn: () => null,
+    },
+    { eventsRef, latestRef },
+  );
+
+  // Thread marker at NOW_S-10 covers evt1 (NOW_S-30) and evt2 (NOW_S-15), not evt3.
+  await harness.render({
+    pubkey: PUBKEY,
+    relay: RELAY,
+    isReady: true,
+    readStateVersion: 1,
+    getTs: () => null,
+    getOwn: (ctx) => (ctx === "thread:root-shared" ? NOW_S - 10 : null),
+    onPruned: () => {
+      pruneCount += 1;
+    },
+  });
+
+  const ch2 = eventsRef.current.get("ch-shared");
+  assert.ok(!ch2?.has("evt1"), "evt1 covered by thread marker must be pruned");
+  assert.ok(!ch2?.has("evt2"), "evt2 covered by thread marker must be pruned");
+  assert.ok(ch2?.has("evt3"), "evt3 with no marker must survive");
+  assert.equal(pruneCount, 1, "onPruned must fire once");
 
   await harness.unmount();
 });
