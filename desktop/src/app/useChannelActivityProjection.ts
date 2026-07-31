@@ -73,6 +73,11 @@ export function useChannelActivityProjection({
     (messageId: string) => getChannelReadAt(msgContextKey(messageId)),
     [getChannelReadAt],
   );
+  const getChannelActivityItemReadAt = React.useCallback(
+    (item: Pick<FeedItem, "channelId" | "id">) =>
+      resolveChannelActivityFeedItemReadAt(item, getOwnReadAt),
+    [getOwnReadAt],
+  );
   const markMessageRead = React.useCallback(
     (messageId: string, timestamp: number) =>
       markChannelRead(
@@ -107,11 +112,10 @@ export function useChannelActivityProjection({
       (item) =>
         isThreadReply(item.tags) &&
         (unreadFeedItemIds.has(item.id) ||
-          item.createdAt >
-            (resolveChannelActivityFeedItemReadAt(item, getOwnReadAt) ?? 0)),
+          item.createdAt > (getChannelActivityItemReadAt(item) ?? 0)),
     );
   }, [
-    getOwnReadAt,
+    getChannelActivityItemReadAt,
     locallyUnreadFeedItems,
     readStateVersion,
     threadActivityFeedItems,
@@ -131,6 +135,7 @@ export function useChannelActivityProjection({
     getThreadReadAt,
     markThreadRead,
     getMessageReadAt,
+    getChannelActivityItemReadAt,
     markMessageRead,
     threadActivityFeedItems,
     locallyUnreadFeedItems,

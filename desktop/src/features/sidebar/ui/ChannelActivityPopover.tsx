@@ -231,7 +231,7 @@ export function ChannelActivityPopover({
     null,
   );
   const {
-    getMessageReadAt,
+    getChannelActivityItemReadAt,
     locallyUnreadFeedItems,
     markChannelRead,
     markMessageRead,
@@ -263,18 +263,29 @@ export function ChannelActivityPopover({
     enabled: open,
   });
   const profiles = profilesQuery.data?.profiles;
+  const activityReadAtByMessageId = React.useMemo(
+    () =>
+      new Map(
+        unreadChannelFeedItems.map((item) => [
+          item.id,
+          getChannelActivityItemReadAt(item),
+        ]),
+      ),
+    [getChannelActivityItemReadAt, unreadChannelFeedItems],
+  );
   const activityItems = React.useMemo(() => {
     if (!open) return [];
     return buildInboxItems({
       channels: [channel],
       currentPubkey: identityQuery.data?.pubkey,
       feed: buildChannelActivityFeed(unreadChannelFeedItems),
-      getMessageReadAt,
+      getMessageReadAt: (messageId) =>
+        activityReadAtByMessageId.get(messageId) ?? null,
       profiles,
     });
   }, [
     channel,
-    getMessageReadAt,
+    activityReadAtByMessageId,
     identityQuery.data?.pubkey,
     open,
     profiles,

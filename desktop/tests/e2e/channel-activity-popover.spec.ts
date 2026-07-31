@@ -307,6 +307,48 @@ test.describe("channel activity hover preview", () => {
     ).toHaveCount(0);
   });
 
+  test("groups multiple unread replies against the previewed channel", async ({
+    page,
+  }) => {
+    await seedChannelActivity(page, { includeAgent: false });
+    await emitMockMessage(
+      page,
+      "A second unread reply should stay grouped with this thread.",
+      {
+        parentEventId: "mock-general-welcome",
+        pubkey: TEST_IDENTITIES.bob.pubkey,
+        createdAt: Math.floor(Date.now() / 1_000) + 120,
+        mentionPubkeys: [SELF_PUBKEY],
+      },
+    );
+
+    const popover = await openActivityPopover(page);
+    const groupedRow = popover
+      .getByTestId(/^channel-activity-item-/)
+      .filter({ hasText: "direct thread link" });
+    await expect(groupedRow).toContainText("2 unread");
+  });
+
+  test("marks projected thread activity read from the active channel menu", async ({
+    page,
+  }) => {
+    await seedChannelActivity(page, { includeAgent: false });
+    await page.getByTestId("channel-general").click();
+    await expect(page.getByTestId("chat-title")).toHaveText("general");
+    await expect(page.getByTestId("channel-unread-dot-general")).toBeVisible();
+
+    await page.getByTestId("channel-general").click({ button: "right" });
+    await expect(
+      page.getByRole("menuitem", { name: "Mark as read" }),
+    ).toBeVisible();
+    await expect(
+      page.getByRole("menuitem", { name: "Mark unread" }),
+    ).toHaveCount(0);
+    await page.getByRole("menuitem", { name: "Mark as read" }).click();
+
+    await expect(page.getByTestId("channel-unread-dot-general")).toHaveCount(0);
+  });
+
   test("supports row actions and opens an agent's scoped activity", async ({
     page,
   }) => {
