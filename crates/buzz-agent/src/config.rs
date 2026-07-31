@@ -579,10 +579,32 @@ pub fn normalize_effort_for_anthropic_route(effort: ThinkingEffort) -> Option<Th
 // ---------------------------------------------------------------------------
 // Generated-backed production helpers (Phase 2 cutover)
 //
-// These delegate to `resolve_model_capabilities` for the `databricks_v2`
-// provider and fall back to the hand-coded helpers for all other providers.
-// Phase 3 will expand coverage and retire the old helpers entirely.
+// One adapter per request path — resolves the effective provider/model ONCE
+// from the generated manifest and applies every manifest-owned axis.
+// Old hand-table implementations are renamed `_old_*` and used only in tests
+// and the behavioral differential shims — they have no production callers.
 // ---------------------------------------------------------------------------
+
+/// Normalize the effort value for any OpenAI-shaped request (pure OpenAI or legacy Databricks).
+///
+/// Resolves the generated capability record for the actual provider/model and
+/// applies `resolve_openai_effort` over its `supported_efforts`.  Uses the same
+/// clamping/peer-fallback semantics as the old hand-table lookup but is driven by
+/// the generated manifest, so exact-record F1 corrections (e.g. `databricks-gpt-5-5`
+/// → `[low,medium,high]`) are enforced in production.
+///
+/// This is the single production authority for `Provider::OpenAi` and
+/// `Provider::Databricks` effort normalization.  The old helper
+/// `normalize_effort_for_openai_route` exists only as a test/differential shim.
+pub fn normalize_effort_for_provider(
+    provider: &str,
+    raw_model: &str,
+    effort: ThinkingEffort,
+) -> ThinkingEffort {
+    use crate::generated_model_capabilities::resolve_model_capabilities;
+    let cap = resolve_model_capabilities(provider, raw_model);
+    resolve_openai_effort(raw_model, effort, cap.supported_efforts.as_ref())
+}
 
 /// Normalize the effort value for a DatabricksV2 request.
 ///
@@ -628,19 +650,19 @@ pub fn normalize_effort_for_databricks_v2(
     }
 }
 
-/// Build the Anthropic thinking/effort request fields for a DatabricksV2 model.
+/// Build the Anthropic thinking/effort request fields for any manifest-owned provider/model.
 ///
-/// Reads `thinking_mode` from the generated capability record for the raw
-/// model ID (provider = "databricks_v2") and applies it:
+/// Resolves `thinking_mode` and `supported_efforts` from the generated capability record
+/// for the effective provider/model and applies them:
 /// - `ManualBudget` → `thinking:{type:"enabled", budget_tokens}` shape
-/// - `Adaptive`     → `thinking:{type:"adaptive"} + output_config:{effort}`
+/// - `Adaptive`     → `thinking:{type:"adaptive"} + output_config:{effort}` shape,
+///   with effort clamped down to the highest supported level
 /// - `OmitFields` / `None` / `NotApplicable` → omit both fields
 ///
-/// Falls back to the hand-coded `anthropic_thinking_config` for models not
-/// present in the manifest (same behaviour as before Phase 2).
-///
-/// This is the production authority for DatabricksV2 Anthropic thinking.
-pub fn anthropic_thinking_config_for_databricks_v2(
+/// This is the single production authority for all providers' Anthropic thinking.
+/// The old `anthropic_thinking_config_for_databricks_v2` is a test-only shim.
+pub fn anthropic_thinking_config_generated(
+    provider: &str,
     raw_model: &str,
     effort: ThinkingEffort,
     max_output_tokens: u32,
@@ -648,7 +670,8 @@ pub fn anthropic_thinking_config_for_databricks_v2(
     use crate::generated_model_capabilities::{resolve_model_capabilities, ThinkingMode};
     use serde_json::json;
 
-    match resolve_model_capabilities("databricks_v2", raw_model).thinking_mode {
+    let cap = resolve_model_capabilities(provider, raw_model);
+    match cap.thinking_mode {
         ThinkingMode::ManualBudget => {
             // Manual-budget shape (claude-3*, claude-opus-4-5): budget_tokens clamped
             // to fit within max_output_tokens.
@@ -672,10 +695,24 @@ pub fn anthropic_thinking_config_for_databricks_v2(
             )
         }
         ThinkingMode::Adaptive => {
-            // Adaptive shape (opus-4-6+, sonnet-4-6+, etc.): clamp effort to model cap.
-            // Use the existing per-model clamper — strip prefix before matching.
-            let model = strip_catalog_prefix(raw_model);
-            let clamped = clamp_adaptive_effort(model, effort);
+            // Adaptive shape: clamp effort downward to the highest supported level.
+            // Uses the generated supported_efforts (the manifest-owned authority) rather
+            // than the legacy clamp_adaptive_effort hand table.
+            let clamped = cap
+                .supported_efforts
+                .iter()
+                .rev()
+                .find(|&&e| e <= effort)
+                .copied()
+                .unwrap_or(effort); // effort is below the lowest supported; pass through (rare)
+            if clamped != effort {
+                tracing::warn!(
+                    model = raw_model,
+                    requested = effort.openai_effort_str(),
+                    clamped = clamped.openai_effort_str(),
+                    "BUZZ_AGENT_THINKING_EFFORT is not available for this model; clamping to highest supported level"
+                );
+            }
             (
                 Some(json!({ "type": "adaptive" })),
                 Some(json!({ "effort": clamped.anthropic_effort_str() })),
@@ -686,6 +723,45 @@ pub fn anthropic_thinking_config_for_databricks_v2(
             // omit thinking fields rather than guess.
             (None, None)
         }
+    }
+}
+
+/// Old DatabricksV2-scoped Anthropic thinking config — kept as a differential shim.
+///
+/// Production code uses `anthropic_thinking_config_generated` instead.
+/// This hard-codes `"databricks_v2"` and uses the legacy `clamp_adaptive_effort` hand table.
+#[cfg(test)]
+pub(crate) fn _old_anthropic_thinking_config_for_databricks_v2(
+    raw_model: &str,
+    effort: ThinkingEffort,
+    max_output_tokens: u32,
+) -> (Option<serde_json::Value>, Option<serde_json::Value>) {
+    use crate::generated_model_capabilities::{resolve_model_capabilities, ThinkingMode};
+    use serde_json::json;
+
+    match resolve_model_capabilities("databricks_v2", raw_model).thinking_mode {
+        ThinkingMode::ManualBudget => {
+            const MIN_ANSWER_TOKENS: u32 = 1024;
+            let level_budget = effort.anthropic_budget_tokens();
+            let headroom = max_output_tokens.saturating_sub(MIN_ANSWER_TOKENS);
+            let budget = level_budget.min(headroom);
+            if budget < MIN_ANSWER_TOKENS {
+                return (None, None);
+            }
+            (
+                Some(json!({ "type": "enabled", "budget_tokens": budget })),
+                None,
+            )
+        }
+        ThinkingMode::Adaptive => {
+            let model = strip_catalog_prefix(raw_model);
+            let clamped = clamp_adaptive_effort(model, effort);
+            (
+                Some(json!({ "type": "adaptive" })),
+                Some(json!({ "effort": clamped.anthropic_effort_str() })),
+            )
+        }
+        ThinkingMode::OmitFields | ThinkingMode::None | ThinkingMode::NotApplicable => (None, None),
     }
 }
 
@@ -2928,69 +3004,6 @@ mod tests {
             ThinkingEffort::Max,
             "databricks-gpt-5-6-sol Max must pass through (F1: supported includes max)"
         );
-    }
-
-    /// Phase-2 differential: new generated effort config matches old hand-coded helper
-    /// for every entry in effortTable.fixture.json. This gate ensures Phase 2 cutover
-    /// is behavior-preserving except where the allowlist explicitly covers a correction.
-    #[test]
-    fn effort_table_fixture_differential_old_vs_new() {
-        use crate::generated_model_capabilities::resolve_model_capabilities;
-
-        // Intentional corrections: models where the generated capability deliberately
-        // diverges from the old implementation. Each entry must cite its source.
-        //
-        // "databricks_v2/databricks-gpt-5-5": Phase 1 ADOPT — models.dev payload
-        //   d5a4974c advertises [low,medium,high]; old code returns [none,low,medium,high,xhigh].
-        //   Provider-advertised wins per plan F1.
-        // "databricks_v2/databricks-gpt-5-4-mini": Phase 1 ADOPT — models.dev advertises
-        //   [low,medium,high]; old code returns [none,low,medium,high,xhigh].
-        // "databricks_v2/databricks-gpt-5-4-nano": Phase 1 ADOPT — same as mini.
-        // "databricks_v2/databricks-gpt-5-6-sol": Phase 1 ADOPT — models.dev advertises
-        //   [low,medium,high,max]; old code returns [none,low,medium,high,xhigh,max].
-        let allowlist: &[(&str, &str)] = &[
-            ("databricks_v2", "databricks-gpt-5-5"),
-            ("databricks_v2", "databricks-gpt-5-4-mini"),
-            ("databricks_v2", "databricks-gpt-5-4-nano"),
-            ("databricks_v2", "databricks-gpt-5-6-sol"),
-        ];
-
-        let fixture_json =
-            include_str!("../../../desktop/src/features/agents/ui/effortTable.fixture.json");
-        let entries: Vec<FixtureEntry> =
-            serde_json::from_str(fixture_json).expect("fixture must be valid JSON");
-
-        for entry in &entries {
-            let label = entry.note.as_deref().unwrap_or(entry.model.as_str());
-            let in_allowlist = allowlist
-                .iter()
-                .any(|(p, m)| *p == entry.provider && *m == entry.model);
-
-            let old_result = valid_effort_values_for_provider_model(&entry.provider, &entry.model);
-
-            // Build new result from generated module.
-            let cap = resolve_model_capabilities(&entry.provider, &entry.model);
-            let new_values: Vec<&'static str> = cap
-                .supported_efforts
-                .iter()
-                .map(|e| e.openai_effort_str())
-                .collect();
-            let new_default: Option<&'static str> =
-                cap.default_effort.map(|e| e.openai_effort_str());
-            let new_result = (new_values, new_default);
-
-            if in_allowlist {
-                // Intentional divergence — skip equality check.
-                continue;
-            }
-
-            assert_eq!(
-                old_result, new_result,
-                "effort differential divergence for fixture entry \"{label}\" \
-                 (provider={}, model={}): old={old_result:?} new={new_result:?}",
-                entry.provider, entry.model,
-            );
-        }
     }
 
     #[test]

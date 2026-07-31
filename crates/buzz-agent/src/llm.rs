@@ -9,9 +9,9 @@ use tokio::time::Instant;
 
 use crate::auth::{PkceOAuthConfig, PkceOAuthTokenSource, StaticTokenSource, TokenSource};
 use crate::config::{
-    anthropic_thinking_config_for_databricks_v2, is_openai_host,
-    normalize_effort_for_anthropic_route, normalize_effort_for_databricks_v2,
-    normalize_effort_for_openai_route, Config, OpenAiApi, Provider, ThinkingEffort,
+    anthropic_thinking_config_generated, is_openai_host, normalize_effort_for_anthropic_route,
+    normalize_effort_for_databricks_v2, normalize_effort_for_provider, Config, OpenAiApi, Provider,
+    ThinkingEffort,
 };
 use crate::types::{
     AgentError, HistoryItem, LlmResponse, ProviderStop, ToolCall, ToolDef, ToolResultContent,
@@ -142,6 +142,7 @@ impl Llm {
                             tools,
                             effective_model,
                             effort,
+                            "anthropic",
                         ),
                     )
                     .await?;
@@ -160,17 +161,23 @@ impl Llm {
                 parse_openai_with_reasoning_details(v)
             }
             Provider::OpenAi | Provider::Databricks => {
+                let provider_str = match cfg.provider {
+                    Provider::OpenAi => "openai",
+                    Provider::Databricks => "databricks",
+                    _ => unreachable!(),
+                };
                 self.openai_request(
                     cfg,
                     effective_model,
                     !tools.is_empty(),
                     |use_responses, request_model| {
-                        // Normalize effort for model-specific availability. Startup no longer rejects
-                        // `max` for pure OpenAI/Databricks; this per-model table is the single authority
-                        // — it keeps `max` for gpt-5.6, clamps `max`→`xhigh` for other OpenAI-shaped
-                        // models, and still applies corrections like none→minimal on the gpt-5 base.
-                        let e =
-                            effort.map(|ef| normalize_effort_for_openai_route(ef, request_model));
+                        // Normalize effort via the generated manifest — resolves the
+                        // actual provider/model record and applies resolve_openai_effort
+                        // over its supported_efforts.  Adopted F1 corrections (e.g.
+                        // databricks-gpt-5-5 → [low,medium,high]) are enforced here.
+                        let e = effort.map(|ef| {
+                            normalize_effort_for_provider(provider_str, request_model, ef)
+                        });
                         if use_responses {
                             (
                                 responses_body(
@@ -208,7 +215,15 @@ impl Llm {
                         // Anthropic Messages path: normalize effort (none|minimal → omit).
                         let e = effort.and_then(normalize_effort_for_anthropic_route);
                         (
-                            anthropic_body(cfg, system_prompt, history, tools, effective_model, e),
+                            anthropic_body(
+                                cfg,
+                                system_prompt,
+                                history,
+                                tools,
+                                effective_model,
+                                e,
+                                "databricks_v2",
+                            ),
                             parse_anthropic as OpenAiParse,
                         )
                     }
@@ -729,6 +744,7 @@ fn anthropic_body(
     tools: &[ToolDef],
     effective_model: &str,
     effort: Option<ThinkingEffort>,
+    provider: &str,
 ) -> Value {
     let mut messages: Vec<Value> = Vec::new();
     let mut pending: Vec<Value> = Vec::new();
@@ -800,8 +816,12 @@ fn anthropic_body(
     let mut body = json!({ "model": effective_model, "max_tokens": cfg.max_output_tokens,
         "system": system_value, "messages": messages });
     if let Some(e) = effort {
-        let (thinking, output_config) =
-            anthropic_thinking_config_for_databricks_v2(effective_model, e, cfg.max_output_tokens);
+        let (thinking, output_config) = anthropic_thinking_config_generated(
+            provider,
+            effective_model,
+            e,
+            cfg.max_output_tokens,
+        );
         if let Some(t) = thinking {
             body["thinking"] = t;
         }
@@ -3010,6 +3030,7 @@ mod tests {
             &[],
             "model",
             None,
+            "anthropic",
         );
         let content = &body["messages"][2]["content"][0]["content"];
         assert_eq!(content[0]["type"], "text");
@@ -3495,23 +3516,23 @@ mod tests {
                 .iter()
                 .map(|e| e.openai_effort_str())
                 .collect();
-            if new_efforts != old_efforts {
-                if !is_allowlisted(provider, raw_model, "supported_efforts", hits) {
-                    divergences.push(format!(
-                        "DIVERGE supported_efforts [{label}] provider={provider} model={raw_model:?}: old={old_efforts:?} new={new_efforts:?}"
-                    ));
-                }
+            if new_efforts != old_efforts
+                && !is_allowlisted(provider, raw_model, "supported_efforts", hits)
+            {
+                divergences.push(format!(
+                    "DIVERGE supported_efforts [{label}] provider={provider} model={raw_model:?}: old={old_efforts:?} new={new_efforts:?}"
+                ));
             }
 
             // --- default_effort ---
             let new_default: Option<&'static str> =
                 new_cap.default_effort.map(|e| e.openai_effort_str());
-            if new_default != old_default {
-                if !is_allowlisted(provider, raw_model, "default_effort", hits) {
-                    divergences.push(format!(
-                        "DIVERGE default_effort [{label}] provider={provider} model={raw_model:?}: old={old_default:?} new={new_default:?}"
-                    ));
-                }
+            if new_default != old_default
+                && !is_allowlisted(provider, raw_model, "default_effort", hits)
+            {
+                divergences.push(format!(
+                    "DIVERGE default_effort [{label}] provider={provider} model={raw_model:?}: old={old_default:?} new={new_default:?}"
+                ));
             }
 
             // --- databricks_v2_wire_route (databricks_v2 only) ---
@@ -3525,36 +3546,35 @@ mod tests {
                     | GenRoute::RouteUnknown
                     | GenRoute::NotApplicable => DatabricksV2Route::MlflowChatCompletions,
                 };
-                if new_route != old_route {
-                    if !is_allowlisted(provider, raw_model, "databricks_v2_wire_route", hits) {
-                        divergences.push(format!(
-                            "DIVERGE databricks_v2_wire_route [{label}] model={raw_model:?}: old={old_route:?} new={new_route:?}"
-                        ));
-                    }
+                if new_route != old_route
+                    && !is_allowlisted(provider, raw_model, "databricks_v2_wire_route", hits)
+                {
+                    divergences.push(format!(
+                        "DIVERGE databricks_v2_wire_route [{label}] model={raw_model:?}: old={old_route:?} new={new_route:?}"
+                    ));
                 }
 
                 // --- thinking_mode (databricks_v2 Anthropic-routed models) ---
-                let old_route_for_thinking = _old_databricks_v2_route_for_model(raw_model);
-                let old_tm = old_thinking_mode(provider, raw_model, old_route_for_thinking);
-                if new_cap.thinking_mode != old_tm {
-                    if !is_allowlisted(provider, raw_model, "thinking_mode", hits) {
-                        divergences.push(format!(
-                            "DIVERGE thinking_mode [{label}] provider={provider} model={raw_model:?}: old={old_tm:?} new={:?}",
-                            new_cap.thinking_mode
-                        ));
-                    }
+                let old_tm = old_thinking_mode(provider, raw_model, old_route);
+                if new_cap.thinking_mode != old_tm
+                    && !is_allowlisted(provider, raw_model, "thinking_mode", hits)
+                {
+                    divergences.push(format!(
+                        "DIVERGE thinking_mode [{label}] provider={provider} model={raw_model:?}: old={old_tm:?} new={:?}",
+                        new_cap.thinking_mode
+                    ));
                 }
             } else if provider == "anthropic" {
                 // thinking_mode for pure Anthropic
                 let old_tm =
                     old_thinking_mode(provider, raw_model, DatabricksV2Route::AnthropicMessages);
-                if new_cap.thinking_mode != old_tm {
-                    if !is_allowlisted(provider, raw_model, "thinking_mode", hits) {
-                        divergences.push(format!(
-                            "DIVERGE thinking_mode [{label}] provider={provider} model={raw_model:?}: old={old_tm:?} new={:?}",
-                            new_cap.thinking_mode
-                        ));
-                    }
+                if new_cap.thinking_mode != old_tm
+                    && !is_allowlisted(provider, raw_model, "thinking_mode", hits)
+                {
+                    divergences.push(format!(
+                        "DIVERGE thinking_mode [{label}] provider={provider} model={raw_model:?}: old={old_tm:?} new={:?}",
+                        new_cap.thinking_mode
+                    ));
                 }
             }
         };
@@ -3657,6 +3677,299 @@ mod tests {
         println!(
             "Comprehensive differential: {} input entries, {} allowlist slots exercised/{}, 0 unexpected divergences",
             total_entries,
+            allowlist_hits.len(),
+            allowlist.len(),
+        );
+    }
+
+    /// Phase-2 behavioral differential: drives the actual production normalization
+    /// functions against the old shims over all committed inputs.
+    ///
+    /// This test catches the class of defect found at `305627e32`: a record-level
+    /// differential passes (the generated record is correct) while the production
+    /// function diverges (it delegates to the old hand table instead of the record).
+    ///
+    /// For every input that hits a provider with an OpenAI-shaped normalization policy
+    /// (databricks_v2 with OpenAiStandard / OpenAiClampMaxToXHigh), this test drives
+    /// `normalize_effort_for_databricks_v2(effort, raw_model)` across all 7 requested
+    /// effort levels and compares against `normalize_effort_for_openai_route(effort, stripped)`.
+    ///
+    /// For Anthropic-routed inputs (databricks_v2 with NormalizationPolicy::None), this
+    /// test compares `anthropic_thinking_config_generated("databricks_v2", ...)` against
+    /// `_old_anthropic_thinking_config_for_databricks_v2(...)` for each non-None effort.
+    ///
+    /// Allowlist entries cover intentional behavioral divergences (F1 corrections);
+    /// stale entries fail the test.
+    #[test]
+    fn behavioral_differential_production_functions_match_old_shims() {
+        use crate::config::{
+            _old_anthropic_thinking_config_for_databricks_v2, anthropic_thinking_config_generated,
+            normalize_effort_for_databricks_v2, normalize_effort_for_openai_route,
+            strip_catalog_prefix as config_strip_catalog_prefix,
+        };
+        use crate::generated_model_capabilities::{
+            resolve_model_capabilities, NormalizationPolicy,
+        };
+        use std::collections::HashSet;
+
+        const MAX_OUTPUT_TOKENS: u32 = 32_768;
+
+        // All 7 effort levels in ordinal order.
+        const ALL_EFFORTS: &[ThinkingEffort] = &[
+            ThinkingEffort::None,
+            ThinkingEffort::Minimal,
+            ThinkingEffort::Low,
+            ThinkingEffort::Medium,
+            ThinkingEffort::High,
+            ThinkingEffort::XHigh,
+            ThinkingEffort::Max,
+        ];
+
+        // Axis-scoped allowlist mirroring the record differential.
+        // "normalization_result" = effort normalization output diverges.
+        // "thinking_shape" = thinking request JSON shape diverges.
+        #[derive(Debug)]
+        struct BehavAllowlistEntry {
+            raw_model_id: &'static str,
+            axis: &'static str,
+            reason: &'static str,
+        }
+        // Only databricks_v2 entries are probed here; provider is implicitly databricks_v2.
+        let allowlist: &[BehavAllowlistEntry] = &[
+            // F1 corrections: generated supported_efforts differs from old hand table.
+            // normalize_effort_for_databricks_v2 now resolves against generated supported_efforts
+            // → old shim's clamping of none→none, xhigh→xhigh is replaced by none→low, xhigh→high.
+            BehavAllowlistEntry {
+                raw_model_id: "databricks-gpt-5-5",
+                axis: "normalization_result",
+                reason: "F1 ADOPT: generated [low,medium,high]; old table admits none+xhigh",
+            },
+            BehavAllowlistEntry {
+                raw_model_id: "databricks-gpt-5-4-mini",
+                axis: "normalization_result",
+                reason: "F1 ADOPT: generated [low,medium,high]; old table admits none+xhigh",
+            },
+            BehavAllowlistEntry {
+                raw_model_id: "databricks-gpt-5-4-nano",
+                axis: "normalization_result",
+                reason: "F1 ADOPT: generated [low,medium,high]; old table admits none+xhigh",
+            },
+            BehavAllowlistEntry {
+                raw_model_id: "databricks-gpt-5-6-sol",
+                axis: "normalization_result",
+                reason: "F1 ADOPT: generated [low,medium,high,max]; old table admits none+xhigh",
+            },
+        ];
+
+        let mut allowlist_hits: HashSet<(&str, &str)> = HashSet::new();
+        let mut divergences: Vec<String> = Vec::new();
+
+        let is_allowlisted = |model: &str, axis: &str, hits: &mut HashSet<(&str, &str)>| {
+            for entry in allowlist {
+                if entry.raw_model_id == model && entry.axis == axis {
+                    hits.insert((entry.raw_model_id, entry.axis));
+                    return true;
+                }
+            }
+            false
+        };
+
+        // --- Collect all databricks_v2 inputs from the three committed sets ---
+        #[derive(serde::Deserialize)]
+        struct FixtureEntry {
+            note: Option<String>,
+            provider: String,
+            model: String,
+        }
+        #[derive(serde::Deserialize)]
+        struct CorpusEntry {
+            #[serde(rename = "_group")]
+            group: Option<String>,
+            id: Option<String>,
+            provider: Option<String>,
+            raw_model_id: Option<String>,
+        }
+        #[derive(serde::Deserialize)]
+        struct CatalogEntry {
+            name: String,
+        }
+        #[derive(serde::Deserialize)]
+        struct CatalogFixture {
+            endpoints: Vec<CatalogEntry>,
+        }
+
+        let mut inputs: Vec<(String, String)> = Vec::new(); // (label, raw_model_id) for databricks_v2
+
+        let fixture_json =
+            include_str!("../../../desktop/src/features/agents/ui/effortTable.fixture.json");
+        let fixture: Vec<FixtureEntry> =
+            serde_json::from_str(fixture_json).expect("fixture must be valid JSON");
+        for e in &fixture {
+            if e.provider == "databricks_v2" {
+                let label = format!("fixture:{}", e.note.as_deref().unwrap_or(&e.model));
+                inputs.push((label, e.model.clone()));
+            }
+        }
+
+        let corpus_json = include_str!("../../../scripts/normative-corpus.json");
+        let corpus: Vec<CorpusEntry> =
+            serde_json::from_str(corpus_json).expect("corpus must be valid JSON");
+        for e in &corpus {
+            if e.group.is_some() {
+                continue;
+            }
+            if let (Some(prov), Some(model)) = (&e.provider, &e.raw_model_id) {
+                if prov == "databricks_v2" {
+                    let label = format!("corpus:{}", e.id.as_deref().unwrap_or(model.as_str()));
+                    inputs.push((label, model.clone()));
+                }
+            }
+        }
+
+        let catalog_json = include_str!("../../../scripts/catalog-sample-fixture.json");
+        let catalog: CatalogFixture =
+            serde_json::from_str(catalog_json).expect("catalog fixture must be valid JSON");
+        for e in &catalog.endpoints {
+            let label = format!("catalog:{}", e.name);
+            inputs.push((label, e.name.clone()));
+        }
+
+        // --- Behavioral probe for each input ---
+        for (label, raw_model) in &inputs {
+            let cap = resolve_model_capabilities("databricks_v2", raw_model);
+
+            match cap.normalization_policy {
+                NormalizationPolicy::OpenAiStandard
+                | NormalizationPolicy::OpenAiClampMaxToXHigh => {
+                    // Probe all 7 effort levels through the production normalization function
+                    // vs the old shim.
+                    let stripped = config_strip_catalog_prefix(raw_model);
+                    let mut any_divergence = false;
+                    for &effort in ALL_EFFORTS {
+                        let new_result = normalize_effort_for_databricks_v2(effort, raw_model);
+                        let old_result = normalize_effort_for_openai_route(effort, stripped);
+                        if new_result != old_result {
+                            any_divergence = true;
+                        }
+                    }
+                    if any_divergence
+                        && !is_allowlisted(raw_model, "normalization_result", &mut allowlist_hits)
+                    {
+                        // Collect per-effort details for the error message.
+                        let details: Vec<String> = ALL_EFFORTS
+                            .iter()
+                            .filter_map(|&effort| {
+                                let new_result =
+                                    normalize_effort_for_databricks_v2(effort, raw_model);
+                                let old_result =
+                                    normalize_effort_for_openai_route(effort, stripped);
+                                if new_result != old_result {
+                                    Some(format!(
+                                        "  {} → old={} new={}",
+                                        effort.openai_effort_str(),
+                                        old_result.openai_effort_str(),
+                                        new_result.openai_effort_str()
+                                    ))
+                                } else {
+                                    None
+                                }
+                            })
+                            .collect();
+                        divergences.push(format!(
+                            "BEHAVIORAL_DIVERGE normalization_result [{label}] model={raw_model:?}:\n{}",
+                            details.join("\n")
+                        ));
+                    }
+                }
+                NormalizationPolicy::None => {
+                    // Anthropic-routed: compare thinking config shape for each non-None effort.
+                    let mut any_divergence = false;
+                    for &effort in ALL_EFFORTS {
+                        if effort == ThinkingEffort::None || effort == ThinkingEffort::Minimal {
+                            continue; // omit-thinking cases: both produce (None, None), no shape to compare
+                        }
+                        let new_shape = anthropic_thinking_config_generated(
+                            "databricks_v2",
+                            raw_model,
+                            effort,
+                            MAX_OUTPUT_TOKENS,
+                        );
+                        let old_shape = _old_anthropic_thinking_config_for_databricks_v2(
+                            raw_model,
+                            effort,
+                            MAX_OUTPUT_TOKENS,
+                        );
+                        if new_shape != old_shape {
+                            any_divergence = true;
+                        }
+                    }
+                    if any_divergence
+                        && !is_allowlisted(raw_model, "thinking_shape", &mut allowlist_hits)
+                    {
+                        let details: Vec<String> = ALL_EFFORTS
+                            .iter()
+                            .filter_map(|&effort| {
+                                if effort == ThinkingEffort::None
+                                    || effort == ThinkingEffort::Minimal
+                                {
+                                    return None;
+                                }
+                                let new_shape = anthropic_thinking_config_generated(
+                                    "databricks_v2",
+                                    raw_model,
+                                    effort,
+                                    MAX_OUTPUT_TOKENS,
+                                );
+                                let old_shape = _old_anthropic_thinking_config_for_databricks_v2(
+                                    raw_model,
+                                    effort,
+                                    MAX_OUTPUT_TOKENS,
+                                );
+                                if new_shape != old_shape {
+                                    Some(format!(
+                                        "  effort={}: old={:?} new={:?}",
+                                        effort.openai_effort_str(),
+                                        old_shape,
+                                        new_shape
+                                    ))
+                                } else {
+                                    None
+                                }
+                            })
+                            .collect();
+                        divergences.push(format!(
+                            "BEHAVIORAL_DIVERGE thinking_shape [{label}] model={raw_model:?}:\n{}",
+                            details.join("\n")
+                        ));
+                    }
+                }
+            }
+        }
+
+        // Stale allowlist: any declared entry that never fired is a bug.
+        let mut stale: Vec<String> = Vec::new();
+        for entry in allowlist {
+            if !allowlist_hits.contains(&(entry.raw_model_id, entry.axis)) {
+                stale.push(format!(
+                    "STALE_ALLOWLIST model={} axis={} reason={}",
+                    entry.raw_model_id, entry.axis, entry.reason
+                ));
+            }
+        }
+
+        let mut failures = divergences.clone();
+        failures.extend(stale);
+
+        assert!(
+            failures.is_empty(),
+            "Behavioral differential found {} failure(s):\n{}",
+            failures.len(),
+            failures.join("\n")
+        );
+
+        println!(
+            "Behavioral differential: {} databricks_v2 inputs probed, {} behavioral allowlist slots exercised/{}, 0 unexpected divergences",
+            inputs.len(),
             allowlist_hits.len(),
             allowlist.len(),
         );
@@ -3803,6 +4116,7 @@ mod tests {
             &[],
             "databricks-claude-opus-5",
             None,
+            "databricks_v2",
         );
         // Static prefix: system promoted to a structured block carrying the marker.
         assert_eq!(body["system"][0]["type"], "text");
@@ -3833,6 +4147,7 @@ mod tests {
             &[],
             "databricks-claude-opus-5",
             None,
+            "databricks_v2",
         );
         let msgs = body["messages"].as_array().unwrap();
         assert_eq!(msgs.len(), 1);
@@ -3853,6 +4168,7 @@ mod tests {
             &[],
             "databricks-claude-opus-5",
             None,
+            "anthropic",
         );
         // system stays a bare string; no marker anywhere.
         assert_eq!(body["system"], "sys");
@@ -3871,6 +4187,7 @@ mod tests {
             &[],
             "databricks-claude-opus-5",
             None,
+            "databricks_v2",
         );
         assert_eq!(body["system"], "");
         assert_eq!(
@@ -3890,6 +4207,7 @@ mod tests {
             &[],
             "model",
             None,
+            "anthropic",
         );
         assert!(
             body.get("thinking").is_none(),
@@ -3910,6 +4228,7 @@ mod tests {
             &[],
             "claude-3-7-sonnet-20250219",
             Some(ThinkingEffort::High),
+            "anthropic",
         );
         assert_eq!(body["thinking"]["type"], "enabled");
         // budget_tokens = min(32768, 4096-1024) = 3072
@@ -3929,6 +4248,7 @@ mod tests {
             &[],
             "claude-3-7-sonnet-20250219",
             Some(ThinkingEffort::High),
+            "anthropic",
         );
         assert!(
             body.get("thinking").is_none(),
@@ -3948,6 +4268,7 @@ mod tests {
             &[],
             "claude-3-7-sonnet-20250219",
             Some(ThinkingEffort::High),
+            "anthropic",
         );
         let t = body
             .get("thinking")
@@ -3967,6 +4288,7 @@ mod tests {
             &[],
             "claude-3-7-sonnet-20250219",
             Some(ThinkingEffort::High),
+            "anthropic",
         );
         assert_eq!(body["thinking"]["budget_tokens"], 32_768);
     }
@@ -3984,6 +4306,7 @@ mod tests {
             &[],
             "claude-3-7-sonnet-20250219",
             Some(ThinkingEffort::Low),
+            "anthropic",
         );
         // Low budget (1024) fits exactly at the boundary — emitted without capping.
         assert_eq!(body["thinking"]["budget_tokens"], 1024);
@@ -4002,6 +4325,7 @@ mod tests {
             &[],
             "claude-opus-4-7",
             Some(ThinkingEffort::High),
+            "anthropic",
         );
         assert_eq!(
             body["thinking"]["type"], "adaptive",
@@ -4023,6 +4347,7 @@ mod tests {
             &[],
             "claude-opus-4-5",
             Some(ThinkingEffort::High),
+            "anthropic",
         );
         assert_eq!(body["thinking"]["type"], "enabled");
         assert_eq!(body["thinking"]["budget_tokens"], 31_744); // min(32768, 32768-1024)
@@ -4042,6 +4367,7 @@ mod tests {
             &[],
             "gpt-4o",
             Some(ThinkingEffort::High),
+            "anthropic",
         );
         assert!(body.get("thinking").is_none(), "thinking must be absent");
         assert!(
@@ -4117,6 +4443,7 @@ mod tests {
             &[],
             "override-model",
             None,
+            "anthropic",
         );
         assert_eq!(body["model"], "override-model");
     }
@@ -4146,6 +4473,7 @@ mod tests {
             &[],
             "claude-opus-4-8",
             Some(ThinkingEffort::XHigh),
+            "anthropic",
         );
         assert_eq!(body["thinking"]["type"], "adaptive");
         assert_eq!(body["output_config"]["effort"], "xhigh");
@@ -4163,6 +4491,7 @@ mod tests {
             &[],
             "claude-opus-4-8",
             Some(ThinkingEffort::Max),
+            "anthropic",
         );
         assert_eq!(body["thinking"]["type"], "adaptive");
         assert_eq!(body["output_config"]["effort"], "max");
@@ -4340,6 +4669,7 @@ mod tests {
             &[],
             "claude-opus-4-8",
             normalized, // None → omit thinking fields
+            "anthropic",
         );
         assert!(
             body.get("thinking").is_none(),
@@ -6278,6 +6608,7 @@ mod tests {
             &[],
             "claude-opus-4-7",
             None,
+            "anthropic",
         );
         let messages = body["messages"].as_array().unwrap();
         let assistant = messages
