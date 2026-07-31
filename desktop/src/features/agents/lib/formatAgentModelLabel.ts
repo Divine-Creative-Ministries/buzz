@@ -5,11 +5,15 @@ import {
 
 /**
  * Known provider-id aliases that must be normalized before generated lookups.
- * The UI and Rust persist "databricks-v2" (hyphen form) but the manifest
- * registers records under "databricks_v2" (underscore form).
+ *
+ * - "databricks-v2" (hyphen form) → "databricks_v2" (underscore form used in manifest).
+ * - "openai-compat" → "openai": Rust already accepts "openai-compat" as Provider::OpenAi
+ *   (crates/buzz-agent/src/config.rs); TS must canonicalize identically so the UI shows
+ *   the same effort table that the Rust request path will apply.
  */
 const PROVIDER_ALIASES: Readonly<Record<string, string>> = {
   "databricks-v2": "databricks_v2",
+  "openai-compat": "openai",
 };
 
 /**
