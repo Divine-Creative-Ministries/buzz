@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use super::{
-    display_invalid_key, is_derived_provider_model_key, is_reserved_env_key,
+    apply_resume_env, display_invalid_key, is_derived_provider_model_key, is_reserved_env_key,
     is_well_formed_env_key, merged_user_env, validate_user_env_keys,
     DERIVED_PROVIDER_MODEL_ENV_KEYS, MAX_ENV_TOTAL_BYTES, MAX_ENV_VALUE_BYTES, RESERVED_ENV_KEYS,
 };
@@ -527,18 +527,16 @@ fn resume_on_restart_is_reserved_and_stripped_from_user_env() {
 fn resume_env_toggle_off_writes_false_overriding_ambient() {
     // When the UI toggle is OFF, the child must see "false" even when the
     // desktop process itself has BUZZ_ACP_RESUME_ON_RESTART=true in its env
-    // (ambient parent leak). The production code calls env_remove then env
-    // unconditionally; this test mirrors that exact pair.
+    // (ambient parent leak). Routes through the production `apply_resume_env`
+    // helper called by `spawn_agent_child`; regresses if that call is removed
+    // or reverts to conditional emission.
     let mut cmd = std::process::Command::new("true");
 
-    // Simulate ambient parent-process env by setting it on the command first
-    // (std::process::Command inherits from the parent, so cmd.env overwrites
-    // in the same way std::env::set_var would — same priority ordering).
+    // Simulate ambient parent-process env (std::process::Command inherits
+    // from the parent; cmd.env overwrites in the same priority order).
     cmd.env("BUZZ_ACP_RESUME_ON_RESTART", "true"); // ambient "on"
 
-    // Production code path for resume_on_restart = false:
-    cmd.env_remove("BUZZ_ACP_RESUME_ON_RESTART");
-    cmd.env("BUZZ_ACP_RESUME_ON_RESTART", false.to_string());
+    apply_resume_env(&mut cmd, false);
 
     let resume_val = cmd
         .get_envs()
@@ -556,13 +554,12 @@ fn resume_env_toggle_off_writes_false_overriding_ambient() {
 fn resume_env_toggle_on_writes_true_overriding_ambient() {
     // When the UI toggle is ON, the child must see "true" even when the
     // desktop process has BUZZ_ACP_RESUME_ON_RESTART=false in its env.
+    // Routes through the production `apply_resume_env` helper.
     let mut cmd = std::process::Command::new("true");
 
     cmd.env("BUZZ_ACP_RESUME_ON_RESTART", "false"); // ambient "off"
 
-    // Production code path for resume_on_restart = true:
-    cmd.env_remove("BUZZ_ACP_RESUME_ON_RESTART");
-    cmd.env("BUZZ_ACP_RESUME_ON_RESTART", true.to_string());
+    apply_resume_env(&mut cmd, true);
 
     let resume_val = cmd
         .get_envs()

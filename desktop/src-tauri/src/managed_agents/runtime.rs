@@ -722,11 +722,7 @@ pub fn spawn_agent_child(
         command.env("BUZZ_ACP_MAX_TURN_DURATION", max_dur.to_string());
     }
     // Reserved and emitted unconditionally — UI toggle is authoritative, no ambient env leak.
-    command.env_remove("BUZZ_ACP_RESUME_ON_RESTART");
-    command.env(
-        "BUZZ_ACP_RESUME_ON_RESTART",
-        record.resume_on_restart.to_string(),
-    );
+    super::env_vars::apply_resume_env(&mut command, record.resume_on_restart);
     command.env("BUZZ_ACP_AGENTS", record.parallelism.to_string());
     command.env("BUZZ_ACP_MULTIPLE_EVENT_HANDLING", "steer");
     command.env("BUZZ_ACP_DEDUP", "queue");

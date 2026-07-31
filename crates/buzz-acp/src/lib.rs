@@ -1283,6 +1283,23 @@ async fn tokio_main() -> Result<()> {
 
     let mut config = Config::from_cli().map_err(|e| anyhow::anyhow!("configuration error: {e}"))?;
 
+    // ── Boot-boundary: enforce "off means off" before any operational branch ──
+    //
+    // When resume_on_restart is false the UI promises "turns are dropped and
+    // never picked up." Delete the ledger file here — before the setup-mode
+    // early return below — so the guarantee holds for every boot path, not
+    // only the normal pool path. Silent no-op if no file exists or if the
+    // unlink fails (degraded-filesystem convention).
+    if !config.resume_on_restart {
+        let state_dir = config.state_dir.clone().unwrap_or_else(|| {
+            std::env::current_dir()
+                .unwrap_or_else(|_| PathBuf::from("."))
+                .join(".buzz-acp")
+        });
+        let agent_pubkey_hex_boot = config.keys.public_key().to_hex();
+        ledger::delete_ledger_file(&state_dir, &agent_pubkey_hex_boot, &config.relay_url);
+    }
+
     // ── Setup-mode early branch ───────────────────────────────────────────────
     //
     // When the desktop determines an agent is not ready (missing credentials,
@@ -1527,11 +1544,10 @@ async fn tokio_main() -> Result<()> {
         );
     }
 
-    // Durable pending-turn ledger (auto-resume after restart). When the
-    // flag is off, best-effort delete the ledger file so "off" means off —
-    // any existing file from a prior enabled run is removed and a future
-    // re-enable starts clean rather than resuming a stale turn. Otherwise
-    // load now so boot recovery can stage it before the main loop starts.
+    // Durable pending-turn ledger (auto-resume after restart). When the flag
+    // is off, the boot-boundary deletion above already removed any stale file;
+    // just construct the no-op disabled ledger. Otherwise load now so boot
+    // recovery can stage it before the main loop starts.
     let agent_pubkey_hex = config.keys.public_key().to_hex();
     let (mut ledger, staged_ledger) = if config.resume_on_restart {
         let state_dir = config.state_dir.clone().unwrap_or_else(|| {
@@ -1546,12 +1562,6 @@ async fn tokio_main() -> Result<()> {
             config.resume_ttl_secs,
         )
     } else {
-        let state_dir = config.state_dir.clone().unwrap_or_else(|| {
-            std::env::current_dir()
-                .unwrap_or_else(|_| PathBuf::from("."))
-                .join(".buzz-acp")
-        });
-        ledger::delete_ledger_file(&state_dir, &agent_pubkey_hex, &config.relay_url);
         (Ledger::disabled(), ledger::StagedLedger::default())
     };
 
