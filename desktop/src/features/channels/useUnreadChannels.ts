@@ -325,9 +325,11 @@ export function useUnreadChannels(
       );
       if (markAt === null) return;
       markContextRead(channelId, markAt);
-      // Delegate all observed-ref mutation to the fenced owner operation —
-      // the parent must not touch latestByChannelRef or observedUnreadEventsByChannelRef
-      // directly, or a stale scope-A callback could corrupt scope B before the fence rejects.
+      // Delegate destructive observed-ref removal to the fenced owner operation —
+      // the parent must not delete from latestByChannelRef or
+      // observedUnreadEventsByChannelRef directly on the clear-observed path,
+      // or a stale scope-A callback could corrupt scope B before the fence rejects.
+      // (Fenced record writes in handleChannelMessage and catch-up remain in the parent.)
       if (clearObserved) {
         observedPersistence.removeChannel(channelId);
         bumpLatestVersion();
@@ -960,9 +962,10 @@ export function useUnreadChannels(
     if (pubkey) {
       forcedUnreadStore.write(pubkey, forcedUnreadRef.current);
     }
-    // Delegate all observed-ref mutation to the fenced owner operation —
-    // the parent must not reset latestByChannelRef or observedUnreadEventsByChannelRef
-    // directly, or a stale scope-A callback could corrupt scope B before the fence rejects.
+    // Delegate destructive observed-ref clearing to the fenced owner operation —
+    // the parent must not reset the observed Maps directly on this path, or a
+    // stale scope-A callback could corrupt scope B before the fence rejects.
+    // (Fenced record writes in handleChannelMessage and catch-up remain in the parent.)
     observedPersistence.clearAll();
     bumpLatestVersion();
   }, [getEffectiveTimestamp, markContextRead, observedPersistence, pubkey]);

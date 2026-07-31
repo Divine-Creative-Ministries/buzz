@@ -338,15 +338,21 @@ test("markChannelRead happy path: topLevelOnly=true leaves observed refs intact 
   await harness.unmount();
 });
 
-test("markChannelRead stale: scope-A callback rejects after scope B loads — B refs and storage untouched", async () => {
+test("markChannelRead stale: scope-A callback rejects after scope B loads — B storage survives flush", async () => {
   installFreshStorage();
 
   const PUBKEY_A = "pubkey-a-mcr";
   const PUBKEY_B = "pubkey-b-mcr";
+  // Both scopes share the same channel ID so the stale callback targets the
+  // exact channel present in B's hydrated refs. Without the scope fence, the
+  // pre-fix parent deleted "channel-shared" from B's refs before the owner
+  // operation could reject; a subsequent pagehide flush would then write an
+  // empty map to B's bucket, overwriting the seeded event.
+  const SHARED_CHANNEL = "channel-shared";
 
-  // Seed A with channel-1, B with channel-2.
-  const readAtA = seedStorage(PUBKEY_A, RELAY, "channel-1");
-  seedStorage(PUBKEY_B, RELAY, "channel-2");
+  // Seed A and B each with the same channel so hydration populates both scopes.
+  const readAtA = seedStorage(PUBKEY_A, RELAY, SHARED_CHANNEL, "evt-a");
+  seedStorage(PUBKEY_B, RELAY, SHARED_CHANNEL, "evt-b");
 
   const harness = await mountUnreadChannels({ pubkey: PUBKEY_A });
 
@@ -354,34 +360,34 @@ test("markChannelRead stale: scope-A callback rejects after scope B loads — B 
   const staleMarkChannelRead = harness.markChannelRead;
 
   // Switch to scope B. The persistence hook's hydration effect flushes A
-  // synchronously, resets refs, and loads B's storage (channel-2).
+  // synchronously, resets refs, and loads B's storage (channel-shared/evt-b).
   await harness.render(PUBKEY_B);
 
-  // B's storage before the stale call.
-  const storedBBefore = readObservedUnreadFromStorage(PUBKEY_B, RELAY);
+  // Confirm B's storage has the seeded event before any stale call.
   assert.ok(
-    storedBBefore?.has("channel-2"),
-    "B's channel-2 must be present before the stale call",
+    readObservedUnreadFromStorage(PUBKEY_B, RELAY)?.has(SHARED_CHANNEL),
+    "B's channel-shared must be present before the stale call",
   );
 
-  // Invoke the stale scope-A markChannelRead. With the unfenced parent
-  // pattern, this would have deleted channel-1 from the B-scope refs (if
-  // B had channel-1) and called observedPersistence.removeChannel. With the
-  // fenced pattern, removeChannel validates the scope and returns early — B's
-  // refs and storage are untouched.
+  // Invoke the stale scope-A markChannelRead. The marker timestamp equals B's
+  // observed latest (seeded at NOW_S), so clearObserved would be true — the
+  // pre-fix parent would delete channel-shared from B's refs. The fenced owner
+  // (removeChannel) validates its captured scope-A against the current
+  // scopeLoadedRef (scope B) and returns early. B's refs are untouched.
   await act(async () => {
-    staleMarkChannelRead("channel-1", readAtA);
+    staleMarkChannelRead(SHARED_CHANNEL, readAtA);
   });
 
-  // Flush to materialize any write the stale call might have scheduled.
+  // Flush via pagehide: this writes the current in-memory refs to B's bucket.
+  // If the stale call corrupted B's refs (pre-fix), the flush overwrites the
+  // bucket with an empty or partial map. With the fence in place, the refs
+  // still hold evt-b and the flush preserves the seeded event.
   harness.flushStorage();
 
-  // B's bucket must still have channel-2 and must NOT have had channel-1
-  // written into it or channel-2 deleted from it.
   const storedBAfter = readObservedUnreadFromStorage(PUBKEY_B, RELAY);
   assert.ok(
-    storedBAfter?.has("channel-2"),
-    "B's channel-2 must survive a stale scope-A markChannelRead call",
+    storedBAfter?.has(SHARED_CHANNEL),
+    "B's channel-shared must survive the post-stale-call flush (stale scope-A markChannelRead must not corrupt B's refs)",
   );
 
   await harness.unmount();
@@ -411,7 +417,7 @@ test("markAllChannelsRead happy path: current scope clears all observed refs and
   await harness.unmount();
 });
 
-test("markAllChannelsRead stale: scope-A callback rejects after scope B loads — B refs and storage untouched", async () => {
+test("markAllChannelsRead stale: scope-A callback rejects after scope B loads — B storage survives flush", async () => {
   installFreshStorage();
 
   const PUBKEY_A = "pubkey-a-mar";
@@ -425,28 +431,34 @@ test("markAllChannelsRead stale: scope-A callback rejects after scope B loads �
   // Capture markAllChannelsRead from scope A.
   const staleMarkAllChannelsRead = harness.markAllChannelsRead;
 
-  // Switch to scope B.
+  // Switch to scope B. Hydration flushes A and loads B's storage (channel-2).
   await harness.render(PUBKEY_B);
 
-  const storedBBefore = readObservedUnreadFromStorage(PUBKEY_B, RELAY);
   assert.ok(
-    storedBBefore?.has("channel-2"),
+    readObservedUnreadFromStorage(PUBKEY_B, RELAY)?.has("channel-2"),
     "B's channel-2 must be present before the stale call",
   );
 
-  // Invoke the stale scope-A markAllChannelsRead. With the unfenced pattern,
-  // this would have reset B's refs to empty Maps before clearAll rejected.
-  // With the fenced pattern, clearAll validates scope first and returns early
-  // — B's refs and storage are fully intact.
+  // Invoke the stale scope-A markAllChannelsRead. The pre-fix parent reset
+  // both B-scope observed refs to new Maps before the fenced clearAll() could
+  // reject. A subsequent pagehide flush would then write an empty map to B's
+  // bucket, erasing the seeded event. With the fence in place, clearAll()
+  // validates its captured scope-A against the current scopeLoadedRef (scope
+  // B) and returns early — B's refs still hold channel-2.
   await act(async () => {
     staleMarkAllChannelsRead();
   });
 
-  // B's bucket must still have channel-2.
+  // Flush via pagehide: this writes the current in-memory refs to B's bucket.
+  // If the stale call wiped B's refs (pre-fix), the flush overwrites the bucket
+  // with an empty map. With the fence in place, the refs are intact and the
+  // flush preserves channel-2.
+  harness.flushStorage();
+
   const storedBAfter = readObservedUnreadFromStorage(PUBKEY_B, RELAY);
   assert.ok(
     storedBAfter?.has("channel-2"),
-    "B's channel-2 must survive a stale scope-A markAllChannelsRead call",
+    "B's channel-2 must survive the post-stale-call flush (stale scope-A markAllChannelsRead must not wipe B's refs)",
   );
 
   await harness.unmount();

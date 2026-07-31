@@ -708,9 +708,9 @@ test("A→B scope switch: pending A-timer is cancelled by flush, A data persiste
   //
   // A genuinely late scope-A timer cannot exist after a scope switch, because
   // flushObservedUnreadWrite always cancels the pending timer before resetting
-  // the refs. The immutability of a snapshot at schedule time (that a timer
-  // fired BEFORE flush would write A's snapshot, not B's live refs) is proven
-  // directly in observedUnreadStorage.test.mjs via scheduleObservedUnreadWrite.
+  // the refs. The persistence hook's timer closure holds an immutable snapshot
+  // of the event map at schedule time, but that timer is always cancelled before
+  // it can fire — so the snapshot invariant is moot in the lifecycle path.
   installFreshStorage();
 
   const PUBKEY_AT = "pubkey-a-t";
