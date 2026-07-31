@@ -20,6 +20,56 @@ use crate::usage::{TurnUsage, UsageTracker};
 /// Lines exceeding this limit are rejected to prevent OOM from rogue agents.
 const MAX_LINE_SIZE: usize = 10_000_000; // 10 MB
 
+/// Parent-process variables that a Claude adapter needs for ordinary process
+/// startup. Everything else must be supplied explicitly through the persona.
+/// This keeps host credentials (for example AWS, GitHub, and Buzz keys) out of
+/// an agent that may process untrusted channel messages.
+const CLAUDE_PARENT_ENV_ALLOWLIST: &[&str] = &[
+    "PATH",
+    "HOME",
+    "USER",
+    "LOGNAME",
+    "SHELL",
+    "TMPDIR",
+    "TMP",
+    "TEMP",
+    "LANG",
+    "LC_ALL",
+    "TERM",
+    "COLORTERM",
+    "NO_COLOR",
+    "FORCE_COLOR",
+    "SSL_CERT_FILE",
+    "SSL_CERT_DIR",
+    "NODE_EXTRA_CA_CERTS",
+    "SYSTEMROOT",
+    "COMSPEC",
+    "PATHEXT",
+    "USERPROFILE",
+    "LOCALAPPDATA",
+    "APPDATA",
+    "PROGRAMDATA",
+    "PROGRAMFILES",
+    "PROGRAMFILES(X86)",
+    "CLAUDE_CODE_EXECUTABLE",
+];
+
+fn is_claude_adapter(command: &str) -> bool {
+    matches!(
+        crate::config::normalize_agent_command_identity(command).as_str(),
+        "claude-agent-acp" | "claude-code-acp" | "claude-code" | "claudecode"
+    )
+}
+
+fn claude_parent_env_is_allowed(key: &std::ffi::OsStr) -> bool {
+    let Some(key) = key.to_str() else {
+        return false;
+    };
+    CLAUDE_PARENT_ENV_ALLOWLIST
+        .iter()
+        .any(|allowed| key.eq_ignore_ascii_case(allowed))
+}
+
 /// An MCP server configuration passed to `session/new`.
 ///
 /// Corresponds to the `McpServerStdio` variant in the ACP schema.
@@ -211,6 +261,47 @@ pub struct AcpClient {
     /// deltas. Both goose and buzz-agent emit this notification; goose gates
     /// on client capability advertisement, buzz-agent emits unconditionally.
     goose_usage: UsageTracker,
+    /// Claude's ACP adapter otherwise loads the host user's settings and MCP
+    /// servers. This flag adds the adapter-specific session isolation metadata.
+    is_claude_adapter: bool,
+}
+
+fn build_session_new_params(
+    cwd: &str,
+    mcp_servers: Vec<McpServer>,
+    system_prompt: Option<&str>,
+    session_title: Option<&str>,
+    isolate_claude: bool,
+) -> serde_json::Value {
+    let mut params = serde_json::json!({
+        "cwd": cwd,
+        "mcpServers": mcp_servers,
+    });
+    if let Some(sp) = system_prompt {
+        params["systemPrompt"] = serde_json::Value::String(sp.to_owned());
+    }
+
+    let mut meta = serde_json::Map::new();
+    if let Some(title) = session_title {
+        meta.insert(
+            "sessionTitle".to_owned(),
+            serde_json::Value::String(title.to_owned()),
+        );
+    }
+    if isolate_claude {
+        meta.insert(
+            "claudeCode".to_owned(),
+            serde_json::json!({
+                "options": {
+                    "settingSources": []
+                }
+            }),
+        );
+    }
+    if !meta.is_empty() {
+        params["_meta"] = serde_json::Value::Object(meta);
+    }
+    params
 }
 
 /// Recursively merge `overlay` into `base`, with `overlay` winning on scalar/shape
@@ -456,6 +547,7 @@ impl AcpClient {
     ) -> Result<Self, AcpError> {
         use std::process::Stdio;
 
+        let is_claude_adapter = is_claude_adapter(command);
         let mut cmd = tokio::process::Command::new(command);
         cmd.args(args)
             .stdin(Stdio::piped())
@@ -466,9 +558,16 @@ impl AcpClient {
             // Callers MUST still call shutdown().await for guaranteed cleanup.
             .kill_on_drop(true);
 
+        if is_claude_adapter {
+            let preserved =
+                std::env::vars_os().filter(|(key, _)| claude_parent_env_is_allowed(key));
+            cmd.env_clear().envs(preserved);
+        }
+
         // Per-persona env vars (e.g., GOOSE_PROVIDER, BUZZ_AGENT_PROVIDER).
-        // For most keys, operator precedence wins: skip injection if already set
-        // in the parent environment.
+        // For non-Claude adapters, operator precedence wins: skip injection if
+        // already set in the parent environment. Claude receives only the
+        // allowlisted parent variables above, so explicit persona values win.
         //
         // CODEX_CONFIG is handled specially via build_codex_config_env:
         //   • has_generated_codex_config=true: merge all CODEX_CONFIG entries + parent
@@ -491,11 +590,10 @@ impl AcpClient {
         let codex_merge_active = codex_config_value.is_some();
 
         // Per-runtime environment defaults (e.g. Hermes MCP-startup isolation).
-        // Applied first so both persona `extra_env` (below, via `Command::env`
-        // key replacement) and inherited parent env (via the parent-presence
-        // check) override them.
+        // Applied first so persona `extra_env` below can replace them. For
+        // non-Claude adapters, inherited parent values also take precedence.
         for &(key, value) in crate::config::default_agent_env(command) {
-            if std::env::var_os(key).is_none() {
+            if is_claude_adapter || std::env::var_os(key).is_none() {
                 cmd.env(key, value);
             }
         }
@@ -505,7 +603,7 @@ impl AcpClient {
                 // Handled by build_codex_config_env; skip here to avoid double-setting.
                 continue;
             }
-            if std::env::var_os(key).is_none() {
+            if is_claude_adapter || std::env::var_os(key).is_none() {
                 cmd.env(key, value);
             }
         }
@@ -550,6 +648,7 @@ impl AcpClient {
             steering_supported: false,
             steer_rx: None,
             goose_usage: UsageTracker::default(),
+            is_claude_adapter,
         })
     }
 
@@ -633,16 +732,13 @@ impl AcpClient {
         system_prompt: Option<&str>,
         session_title: Option<&str>,
     ) -> Result<SessionNewResponse, AcpError> {
-        let mut params = serde_json::json!({
-            "cwd": cwd,
-            "mcpServers": mcp_servers,
-        });
-        if let Some(sp) = system_prompt {
-            params["systemPrompt"] = serde_json::Value::String(sp.to_owned());
-        }
-        if let Some(title) = session_title {
-            params["_meta"] = serde_json::json!({ "sessionTitle": title });
-        }
+        let params = build_session_new_params(
+            cwd,
+            mcp_servers,
+            system_prompt,
+            session_title,
+            self.is_claude_adapter,
+        );
         let result = self.send_request("session/new", params).await?;
         let session_id = result["sessionId"]
             .as_str()
@@ -2894,6 +2990,50 @@ mod tests {
         observed
     }
 
+    #[test]
+    fn claude_spawn_environment_filters_host_credentials() {
+        for key in [
+            "AWS_SECRET_ACCESS_KEY",
+            "GITHUB_TOKEN",
+            "NOSTR_PRIVATE_KEY",
+            "BUZZ_PRIVATE_KEY",
+            "ANTHROPIC_API_KEY",
+        ] {
+            assert!(
+                !super::claude_parent_env_is_allowed(std::ffi::OsStr::new(key)),
+                "{key} must not be inherited by Claude adapters"
+            );
+        }
+
+        for key in [
+            "PATH",
+            "HOME",
+            "TMPDIR",
+            "SystemRoot",
+            "CLAUDE_CODE_EXECUTABLE",
+        ] {
+            assert!(
+                super::claude_parent_env_is_allowed(std::ffi::OsStr::new(key)),
+                "{key} is required for ordinary process startup"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn claude_spawn_keeps_explicit_persona_environment() {
+        const VAR: &str = "BUZZ_TEST_EXPLICIT_CLAUDE_ENV";
+        assert_eq!(
+            spawn_named_and_read_child_env(
+                "claude-agent-acp",
+                VAR,
+                &[(VAR.into(), "configured".into())],
+            )
+            .await,
+            "configured"
+        );
+    }
+
     /// Buzz-owned Hermes processes get the configured-MCP isolation default,
     /// and an explicit persona entry still overrides it (defaults are applied
     /// before `extra_env`, so the later `Command::env` write wins).
@@ -3420,6 +3560,25 @@ mod tests {
         assert!(
             received["params"].get("_meta").is_none(),
             "_meta should be absent entirely, not an empty object or null"
+        );
+    }
+
+    #[test]
+    fn claude_session_disables_host_setting_sources() {
+        let params =
+            super::build_session_new_params("/tmp", vec![], None, Some("Fizz · #buzz-dev"), true);
+
+        assert_eq!(
+            params.pointer("/_meta/claudeCode/options/settingSources"),
+            Some(&serde_json::json!([])),
+            "Claude sessions must not load user, project, or local settings"
+        );
+        assert_eq!(
+            params
+                .pointer("/_meta/sessionTitle")
+                .and_then(|value| value.as_str()),
+            Some("Fizz · #buzz-dev"),
+            "Claude isolation metadata must preserve the session title"
         );
     }
 
