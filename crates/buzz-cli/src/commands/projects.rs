@@ -1186,62 +1186,13 @@ mod tests {
 
     // ── create collision guard ────────────────────────────────────────────────
 
-    /// The create-collision guard (exercised in the live round-trip) emits
-    /// `CliError::Conflict` with a message that names the update command.
-    /// This test drives `cmd_create` against a running relay is not needed
-    /// here; the live transcript covers it.  Instead we verify the guard
-    /// message text so any wording regression is caught at the unit level
-    /// without a relay dependency.
-    ///
-    /// The test uses a closed-port client so the guard fires during the
-    /// collision-preflight network call — except we directly check the error
-    /// variant for the Conflict case.  The live transcript already confirmed
-    /// the Conflict path; here we confirm the Conflict message format via a
-    /// minimal direct construction, which does not construct its own expected
-    /// error or assert on itself: it asserts on the *property* we care about
-    /// (the message names the update command) using the real format string.
-    #[test]
-    fn create_collision_conflict_message_names_update_command() {
-        // Construct the error the same way cmd_create does when collision is detected.
-        let slug = "my-project";
-        let err = CliError::Conflict(format!(
-            "project {slug:?} already exists; use 'buzz projects update' to modify it"
-        ));
-        // Property: the message names the command the user should use instead.
-        assert!(
-            format!("{err}").contains("buzz projects update"),
-            "collision message must name 'buzz projects update' so users know what to do"
-        );
-        assert!(
-            format!("{err}").contains(slug),
-            "collision message must name the slug"
-        );
-    }
+    // The create-collision Conflict path is pinned by the live transcript
+    // (step: duplicate create → Conflict, exit=5). No relay mock is available
+    // for a unit test; the no-network tests above cover all pre-await paths.
 
     // ── add-repo no-op guard ──────────────────────────────────────────────────
 
-    /// When all requested coordinates are already members, `cmd_add_repo` must
-    /// return `CliError::Conflict` *without* publishing a no-op replacement head.
-    /// The live transcript exercised this end-to-end (step 7: exit=5).
-    /// This test pins the guard's position in the code: it occurs after the
-    /// existing-coord scan but before `rebuild_project`, so the count-based
-    /// check (`added == 0`) is the only path to Conflict here.
-    #[test]
-    fn add_repo_no_op_guard_produces_conflict_with_slug_in_message() {
-        // We cannot drive the full async command without a relay, but we can
-        // verify the guard error's properties by constructing it exactly as
-        // cmd_add_repo does and asserting the properties we care about.
-        let slug = "platform";
-        let err = CliError::Conflict(format!(
-            "all requested repositories are already members of project {slug:?}"
-        ));
-        assert!(
-            matches!(err, CliError::Conflict(_)),
-            "no-op add-repo must produce Conflict"
-        );
-        assert!(
-            format!("{err}").contains(slug),
-            "no-op add-repo message must name the project slug"
-        );
-    }
+    // The add-repo no-op Conflict path is pinned by the live transcript
+    // (step 7: buzz already present → exit=5). No relay mock is available
+    // for a unit test; the async no-network tests above cover all pre-await paths.
 }
