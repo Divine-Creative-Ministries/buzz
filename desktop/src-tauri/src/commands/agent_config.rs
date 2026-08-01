@@ -61,12 +61,13 @@ fn non_blank(v: Option<&str>) -> Option<String> {
 
 /// Build a sanitized `InheritedConfigTiers` snapshot at the command boundary.
 ///
-/// Persona env and global env are sanitized with spawn-equivalent rules.
-/// Structured fields are normalized (blank → None).
+/// Persona env, global env, and harness definition env are sanitized with
+/// spawn-equivalent rules. Structured fields are normalized (blank → None).
 /// A missing persona (orphaned link) yields empty persona tiers — the panel
 /// still renders from record/global while spawn independently refuses.
 fn build_inherited_tiers(
     record_persona_id: Option<&str>,
+    record_runtime: Option<&str>,
     personas: &[AgentDefinition],
     global: &GlobalAgentConfig,
 ) -> InheritedConfigTiers {
@@ -77,6 +78,19 @@ fn build_inherited_tiers(
         .unwrap_or_default();
     let global_env = sanitize_inherited_env(&global.env_vars);
 
+    // Definition env: same resolution as spawn (record.runtime → persona.runtime → "").
+    // Reserved keys stripped; no malformed-key / NUL / oversize check needed because
+    // harness definitions are local admin-authored JSON, not user-provided data — but
+    // we apply `sanitize_inherited_env` for defense-in-depth (same rules as the other tiers).
+    let definition_env = {
+        let runtime_id = record_runtime
+            .or_else(|| persona.and_then(|p| p.runtime.as_deref()))
+            .unwrap_or("");
+        crate::managed_agents::custom_harnesses::lookup_loaded_harness_by_id(runtime_id)
+            .map(|def| sanitize_inherited_env(&def.env))
+            .unwrap_or_default()
+    };
+
     let persona_model = persona.and_then(|p| non_blank(p.model.as_deref()));
     let persona_provider = persona.and_then(|p| non_blank(p.provider.as_deref()));
     let persona_prompt = persona.and_then(|p| non_blank(Some(&p.system_prompt)));
@@ -86,6 +100,7 @@ fn build_inherited_tiers(
     InheritedConfigTiers {
         persona_env,
         global_env,
+        definition_env,
         persona_model,
         persona_provider,
         persona_prompt,
@@ -117,7 +132,12 @@ fn resolve_config_surface(
         record.provider = None;
     }
 
-    let tiers = build_inherited_tiers(record.persona_id.as_deref(), personas, global);
+    let tiers = build_inherited_tiers(
+        record.persona_id.as_deref(),
+        record.runtime.as_deref(),
+        personas,
+        global,
+    );
 
     read_config_surface(&record, runtime_meta, session_cache, &tiers)
 }

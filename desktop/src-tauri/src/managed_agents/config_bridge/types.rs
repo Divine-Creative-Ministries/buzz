@@ -20,6 +20,11 @@ pub struct InheritedConfigTiers {
     pub persona_env: BTreeMap<String, String>,
     /// Sanitized env vars from the global agent config.
     pub global_env: BTreeMap<String, String>,
+    /// Sanitized env vars from the resolved harness definition (`HarnessDefinition::env`).
+    /// Sits below global env and above structured values, matching spawn Layer 2b.
+    /// Empty for preset harnesses (all shipped presets have `env: {}`); only
+    /// user-authored custom harness JSONs with a non-empty `env` block contribute here.
+    pub definition_env: BTreeMap<String, String>,
     /// Structured model from the linked persona (non-blank only).
     pub persona_model: Option<String>,
     /// Structured provider from the linked persona (non-blank only).
@@ -63,6 +68,11 @@ pub enum ConfigOrigin {
     /// env var. E.g. Claude Code only supports Anthropic as a provider; the
     /// "locked" display is synthesized by the config bridge, not read from disk.
     HarnessConstraint,
+    /// Value comes from a custom harness definition's `env` block.
+    /// Sits below global env and above structured persona/global values,
+    /// matching spawn Layer 2b. Only reachable for user-authored custom harness
+    /// JSONs with a non-empty `env` block; preset harnesses always have empty env.
+    HarnessDefault,
 }
 
 /// How a config field can be written back to the runtime.

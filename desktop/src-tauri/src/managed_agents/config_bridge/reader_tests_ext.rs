@@ -166,3 +166,93 @@ fn record_env_prompt_wins_over_record_struct_prompt_as_buzz_explicit() {
     assert_eq!(prompt.overridden_value.as_deref(), Some("struct-prompt-A"));
     assert_eq!(prompt.overridden_origin, Some(ConfigOrigin::BuzzExplicit));
 }
+
+// ── Definition env tier tests (Layer 2b) ─────────────────────────────────────
+//
+// The harness definition's `env` block sits below global env and above
+// structured values in spawn's precedence (Layer 2b). These tests exercise
+// the reader's mapping of that tier to `HarnessDefault` origin.
+
+/// Definition env wins over structured persona model when no user-env or
+/// global-env candidate is present.
+#[test]
+fn definition_env_beats_structured_persona_model() {
+    let record = test_record(); // no record.model, no record.env_vars
+    let runtime = test_runtime(); // model_env_var = "GOOSE_MODEL"
+    let tiers = InheritedConfigTiers {
+        definition_env: {
+            let mut m = BTreeMap::new();
+            m.insert("GOOSE_MODEL".to_string(), "harness-model".to_string());
+            m
+        },
+        persona_model: Some("persona-struct-model".to_string()),
+        ..Default::default()
+    };
+
+    let surface = read_config_surface(&record, Some(runtime), None, &tiers);
+
+    let model = surface.normalized.model.unwrap();
+    assert_eq!(model.value.as_deref(), Some("harness-model"));
+    assert_eq!(model.origin, ConfigOrigin::HarnessDefault);
+    // Structured persona model is the overridden secondary.
+    assert_eq!(
+        model.overridden_value.as_deref(),
+        Some("persona-struct-model")
+    );
+    assert_eq!(model.overridden_origin, Some(ConfigOrigin::PersonaDefault));
+}
+
+/// Global env beats definition env — user-settable tiers always win over the
+/// harness author's defaults.
+#[test]
+fn global_env_beats_definition_env() {
+    let record = test_record();
+    let runtime = test_runtime(); // model_env_var = "GOOSE_MODEL"
+    let tiers = InheritedConfigTiers {
+        global_env: {
+            let mut m = BTreeMap::new();
+            m.insert("GOOSE_MODEL".to_string(), "global-model".to_string());
+            m
+        },
+        definition_env: {
+            let mut m = BTreeMap::new();
+            m.insert("GOOSE_MODEL".to_string(), "harness-model".to_string());
+            m
+        },
+        ..Default::default()
+    };
+
+    let surface = read_config_surface(&record, Some(runtime), None, &tiers);
+
+    let model = surface.normalized.model.unwrap();
+    assert_eq!(model.value.as_deref(), Some("global-model"));
+    assert_eq!(model.origin, ConfigOrigin::GlobalDefault);
+    // Harness default is the overridden secondary.
+    assert_eq!(model.overridden_value.as_deref(), Some("harness-model"));
+    assert_eq!(model.overridden_origin, Some(ConfigOrigin::HarnessDefault));
+}
+
+/// A reserved key in the definition env is stripped by sanitization and must
+/// not reach the reader. This test exercises the reader's contract (a key
+/// absent from the tier falls through) — sanitization itself is pinned in
+/// the `agent_config_tests.rs` constructor tests.
+#[test]
+fn reserved_key_absent_from_definition_env_falls_through() {
+    let record = test_record();
+    let runtime = test_runtime(); // model_env_var = "GOOSE_MODEL"
+                                  // definition_env contains only an unrelated key — the env map here is what
+                                  // the command boundary would produce after stripping a reserved key; the
+                                  // reader must fall through to the next tier (persona structured model).
+    let tiers = InheritedConfigTiers {
+        definition_env: BTreeMap::new(), // stripped — nothing survives
+        persona_model: Some("persona-struct-model".to_string()),
+        ..Default::default()
+    };
+
+    let surface = read_config_surface(&record, Some(runtime), None, &tiers);
+
+    let model = surface.normalized.model.unwrap();
+    // Falls through to persona structured model.
+    assert_eq!(model.value.as_deref(), Some("persona-struct-model"));
+    assert_eq!(model.origin, ConfigOrigin::PersonaDefault);
+}

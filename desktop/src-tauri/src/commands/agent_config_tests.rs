@@ -8,6 +8,26 @@ use super::*;
 use crate::managed_agents::config_bridge::types::ConfigOrigin;
 use crate::managed_agents::{BackendKind, RespondTo};
 
+use std::sync::Mutex;
+
+static GOOSE_PATH_ROOT_LOCK: Mutex<()> = Mutex::new(());
+
+/// Run a test body with GOOSE_PATH_ROOT set to a non-existent path so that the
+/// goose config file read returns `None`. Restores the prior value on exit.
+fn with_no_goose_config<T>(body: impl FnOnce() -> T) -> T {
+    let _guard = GOOSE_PATH_ROOT_LOCK
+        .lock()
+        .unwrap_or_else(|err| err.into_inner());
+    let prior = std::env::var_os("GOOSE_PATH_ROOT");
+    std::env::set_var("GOOSE_PATH_ROOT", "/nonexistent-buzz-test-path");
+    let output = body();
+    match prior {
+        Some(value) => std::env::set_var("GOOSE_PATH_ROOT", value),
+        None => std::env::remove_var("GOOSE_PATH_ROOT"),
+    }
+    output
+}
+
 fn goose_runtime() -> &'static KnownAcpRuntime {
     &KnownAcpRuntime {
         id: "goose",
@@ -273,8 +293,15 @@ fn genuine_explicit_live_switch_renders_y_over_x_buzz_explicit_secondary() {
 
 /// Y==X collision: a genuine-explicit agent live-switches to the SAME value
 /// it already had. There is no real divergence, so the field must be a clean
-/// single value with NO secondary row. FAILS against a naive `return base`
-/// that would leak the `AcpConfigOption` row `build_model_field` populates.
+/// single value with NO secondary row and origin matching the baseline (not
+/// RuntimeOverride). FAILS against a naive `return base` that would leak the
+/// `AcpConfigOption` row `build_model_field` populates, and against the
+/// prior implementation that stamped `RuntimeOverride` on the equal-value arm.
+///
+/// `with_no_goose_config` suppresses the goose config file read so that the
+/// fall-through to normal resolution cannot pick up a local `~/.config/goose/config.yaml`
+/// model as a spurious secondary — the test is about tier precedence, not the
+/// local developer's goose install.
 #[test]
 fn genuine_explicit_live_switch_to_same_model_yields_clean_field() {
     let mut record = agent_record();
@@ -283,16 +310,21 @@ fn genuine_explicit_live_switch_to_same_model_yields_clean_field() {
     let personas: Vec<AgentDefinition> = vec![];
     let cache = session_cache("model-x", true);
 
-    let surface = resolve_config_surface(
-        record,
-        &personas,
-        Some(goose_runtime()),
-        Some(&cache),
-        &Default::default(),
-    );
+    let surface = with_no_goose_config(|| {
+        resolve_config_surface(
+            record,
+            &personas,
+            Some(goose_runtime()),
+            Some(&cache),
+            &Default::default(),
+        )
+    });
     let model = surface.normalized.model.expect("model resolved");
 
     assert_eq!(model.value.as_deref(), Some("model-x"));
+    // Equal-value switch must NOT stamp RuntimeOverride — baseline origin wins.
+    assert_eq!(model.origin, ConfigOrigin::BuzzExplicit);
+    assert_ne!(model.origin, ConfigOrigin::RuntimeOverride);
     assert_eq!(model.overridden_value, None);
     assert_eq!(model.overridden_origin, None);
 }
@@ -386,7 +418,7 @@ fn orphaned_persona_link_yields_empty_persona_tiers() {
         ..Default::default()
     };
 
-    let tiers = build_inherited_tiers(record.persona_id.as_deref(), &personas, &global);
+    let tiers = build_inherited_tiers(record.persona_id.as_deref(), None, &personas, &global);
 
     // Persona tier is empty — the orphan yields no persona inheritance.
     assert!(tiers.persona_env.is_empty());
@@ -413,7 +445,7 @@ fn reserved_key_in_inherited_persona_env_is_stripped() {
     let personas = vec![persona];
     let global = crate::managed_agents::GlobalAgentConfig::default();
 
-    let tiers = build_inherited_tiers(Some("persona-1"), &personas, &global);
+    let tiers = build_inherited_tiers(Some("persona-1"), None, &personas, &global);
 
     assert!(
         !tiers.persona_env.contains_key("BUZZ_PRIVATE_KEY"),
@@ -422,6 +454,29 @@ fn reserved_key_in_inherited_persona_env_is_stripped() {
     assert!(
         tiers.persona_env.contains_key("GOOSE_MODEL"),
         "safe key must survive sanitization"
+    );
+}
+
+/// `sanitize_inherited_env` strips reserved keys from a definition-env-shaped
+/// map. This pins the shared sanitization contract for definition_env — the
+/// same function is applied to all three env tiers (persona, global, definition)
+/// at the command boundary.
+#[test]
+fn reserved_key_in_definition_env_shaped_map_is_stripped_by_sanitize() {
+    // Exercise sanitize_inherited_env directly with a definition-env-shaped map.
+    let mut raw = std::collections::BTreeMap::new();
+    raw.insert("BUZZ_PRIVATE_KEY".to_string(), "nsec-secret".to_string());
+    raw.insert("GOOSE_MODEL".to_string(), "harness-model".to_string());
+
+    let sanitized = sanitize_inherited_env(&raw);
+
+    assert!(
+        !sanitized.contains_key("BUZZ_PRIVATE_KEY"),
+        "reserved key must be stripped by sanitize_inherited_env"
+    );
+    assert!(
+        sanitized.contains_key("GOOSE_MODEL"),
+        "safe key must survive sanitize_inherited_env"
     );
 }
 
@@ -439,7 +494,7 @@ fn malformed_key_in_inherited_global_env_is_stripped() {
         .env_vars
         .insert("GOOSE_PROVIDER".to_string(), "anthropic".to_string());
 
-    let tiers = build_inherited_tiers(None, &[], &global);
+    let tiers = build_inherited_tiers(None, None, &[], &global);
 
     assert!(
         !tiers.global_env.contains_key("BAD=KEY"),
