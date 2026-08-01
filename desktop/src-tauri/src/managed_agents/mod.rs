@@ -2,6 +2,7 @@ pub(crate) mod access_policy;
 mod agent_env;
 pub(crate) mod agent_events;
 pub(crate) mod agent_snapshot;
+pub(crate) mod agent_snapshot_envelope;
 pub(crate) mod team_snapshot;
 pub(crate) use access_policy::{internal_build, owner_only, projected_access_with_policy};
 pub(crate) use agent_env::{
