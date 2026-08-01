@@ -231,9 +231,9 @@ export function ChannelActivityPopover({
     null,
   );
   const {
+    clearChannelUnreadSource,
     getChannelActivityItemReadAt,
     locallyUnreadFeedItems,
-    markChannelRead,
     markMessageRead,
     markThreadRead,
     unreadThreadFeedItems,
@@ -342,10 +342,10 @@ export function ChannelActivityPopover({
           feedItem.channelId === channelId && !clearedItemIds.has(feedItem.id),
       );
       if (channelId && !hasAnotherChannelOverride) {
-        markChannelRead(channelId, null, { topLevelOnly: true });
+        clearChannelUnreadSource(channelId, "inbox");
       }
     },
-    [locallyUnreadFeedItems, markChannelRead, undoUnread],
+    [clearChannelUnreadSource, locallyUnreadFeedItems, undoUnread],
   );
 
   const handleMarkRead = React.useCallback(

@@ -1,4 +1,5 @@
 import * as React from "react";
+import type { ForcedUnreadSource } from "@/features/channels/forcedUnreadStore";
 import type { ContextParentResolver } from "@/features/channels/readState/readStateManager";
 import type { ThreadActivityItem } from "@/features/channels/useUnreadChannels";
 import type { FeedItemState } from "@/features/home/useFeedItemState";
@@ -14,7 +15,11 @@ type AppShellContextValue = {
     readAt: string | null | undefined,
     options?: { topLevelOnly?: boolean },
   ) => void;
-  markChannelUnread: (channelId: string) => void;
+  markChannelUnread: (channelId: string, source?: ForcedUnreadSource) => void;
+  clearChannelUnreadSource: (
+    channelId: string,
+    source: ForcedUnreadSource,
+  ) => void;
   openBrowseChannels: () => void;
   openCreateChannel: () => void;
   openChannelManagement: (channelId?: string) => void;
@@ -78,6 +83,7 @@ const AppShellContext = React.createContext<AppShellContextValue>({
   markAllChannelsRead: () => {},
   markChannelRead: () => {},
   markChannelUnread: () => {},
+  clearChannelUnreadSource: () => {},
   openBrowseChannels: () => {},
   openCreateChannel: () => {},
   openChannelManagement: () => {},

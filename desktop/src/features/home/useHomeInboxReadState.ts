@@ -1,5 +1,6 @@
 import * as React from "react";
 
+import type { ForcedUnreadSource } from "@/features/channels/forcedUnreadStore";
 import type { InboxItem } from "@/features/home/lib/inbox";
 import {
   getThreadReference,
@@ -28,7 +29,12 @@ type UseHomeInboxReadStateOptions = {
     options?: { topLevelOnly?: boolean },
   ) => void;
   /** Force a channel's unread indicator without rolling back its NIP-RS marker. */
-  markChannelUnread: (channelId: string) => void;
+  markChannelUnread: (channelId: string, source?: ForcedUnreadSource) => void;
+  /** Remove only the named owner of a channel's forced-unread indicator. */
+  clearChannelUnreadSource: (
+    channelId: string,
+    source: ForcedUnreadSource,
+  ) => void;
   /** Advance the thread read marker to the given unix-seconds timestamp. */
   markThreadRead: (rootId: string, timestamp: number) => void;
   /** Advance a reply's per-message read marker to the given unix-seconds timestamp. */
@@ -145,6 +151,7 @@ export function useHomeInboxReadState({
   localUnreadSet = EMPTY_ITEM_SET,
   markChannelRead,
   markChannelUnread,
+  clearChannelUnreadSource,
   markThreadRead,
   markMessageRead,
   markDoneLocal,
@@ -217,7 +224,7 @@ export function useHomeInboxReadState({
             clearedItemIds,
           )
         ) {
-          markChannelRead(channelId, null, { topLevelOnly: true });
+          clearChannelUnreadSource(channelId, "inbox");
         }
         const markedReplyIds = new Set<string>();
         for (const reply of [item.item, ...item.groupItems]) {
@@ -251,6 +258,7 @@ export function useHomeInboxReadState({
     [
       itemById,
       items,
+      clearChannelUnreadSource,
       localUnreadSet,
       markChannelRead,
       markDoneLocal,
@@ -271,7 +279,7 @@ export function useHomeInboxReadState({
       // Opening the channel clears the bolding but leaves the thread dot until
       // the thread itself is opened or marked read.
       if (channelId && item) {
-        markChannelUnread(channelId);
+        markChannelUnread(channelId, "inbox");
       }
     },
     [itemById, markChannelUnread, markUnreadLocal, undoDoneLocal],

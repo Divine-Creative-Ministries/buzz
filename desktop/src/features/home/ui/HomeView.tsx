@@ -234,6 +234,7 @@ export function HomeView({
     inboxListWidthPx,
   } = useResizableInboxListWidth();
   const {
+    clearChannelUnreadSource,
     getChannelReadAt,
     getThreadReadAt,
     getMessageReadAt,
@@ -385,6 +386,7 @@ export function HomeView({
       readStateVersion,
       localDoneSet: doneSet,
       localUnreadSet: unreadSet,
+      clearChannelUnreadSource,
       markChannelRead,
       markChannelUnread,
       markMessageRead,

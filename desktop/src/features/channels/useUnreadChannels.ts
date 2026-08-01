@@ -20,6 +20,7 @@ import { makeRootIdStore } from "@/features/channels/unreadRootIdStore";
 import {
   forcedUnreadStore,
   type ForcedUnreadMap,
+  useForcedUnreadActions,
 } from "@/features/channels/forcedUnreadStore";
 import {
   getThreadReference,
@@ -335,22 +336,13 @@ export function useUnreadChannels(
     [markContextRead, pubkey],
   );
 
-  // Manually mark a channel unread (e.g., right-click → "mark unread"). Persists
-  // the current NIP-RS read marker as baseline to localStorage so the rail
-  // observer can detect when a cross-device read has since covered the force.
-  // NIP-RS markers are monotonic, so we do not publish a lower timestamp.
-  const markChannelUnread = React.useCallback(
-    (channelId: string) => {
-      if (!Object.hasOwn(forcedUnreadRef.current, channelId)) {
-        forcedUnreadRef.current[channelId] = getOwnTimestamp(channelId);
-        if (pubkey) {
-          forcedUnreadStore.write(pubkey, forcedUnreadRef.current);
-        }
-        bumpLatestVersion();
-      }
-    },
-    [getOwnTimestamp, pubkey],
-  );
+  const { clearChannelUnreadSource, markChannelUnread } =
+    useForcedUnreadActions(
+      forcedUnreadRef,
+      getOwnTimestamp,
+      pubkey,
+      bumpLatestVersion,
+    );
 
   // Record the thread root of an EXTERNAL message that @-mentioned the user.
   // Keyed on the thread root so the badge gate trips for a mention recipient
@@ -855,16 +847,10 @@ export function useUnreadChannels(
       for (const channel of channels) {
         if (channel.id === activeChannelId) continue;
 
-        if (Object.hasOwn(forcedUnreadRef.current, channel.id)) {
-          // Forced-unread is dot tier only — not high-priority.
-          unread.add(channel.id);
-          topLevelUnread.add(channel.id);
-          counts.set(channel.id, 1);
-          unreadChannelNotificationCount += 1;
-          continue;
-        }
-
-        if (latestByChannelRef.current.get(channel.id) === undefined) continue;
+        const isForcedUnread = Object.hasOwn(
+          forcedUnreadRef.current,
+          channel.id,
+        );
 
         const observedEvents = observedUnreadEventsByChannelRef.current.get(
           channel.id,
@@ -878,11 +864,18 @@ export function useUnreadChannels(
             (messageId) => getOwnTimestamp(`msg:${messageId}`),
           );
 
-        const unreadCount = countUnreadObservedEvents(
-          observedEvents,
-          readAtForObservedEvent,
-        );
-        if (unreadCount === 0) continue;
+        const unreadCount =
+          latestByChannelRef.current.get(channel.id) === undefined
+            ? 0
+            : countUnreadObservedEvents(observedEvents, readAtForObservedEvent);
+        if (unreadCount === 0) {
+          if (!isForcedUnread) continue;
+          unread.add(channel.id);
+          topLevelUnread.add(channel.id);
+          counts.set(channel.id, 1);
+          unreadChannelNotificationCount += 1;
+          continue;
+        }
 
         unread.add(channel.id);
         if (
@@ -994,6 +987,7 @@ export function useUnreadChannels(
     markAllChannelsRead,
     markChannelRead,
     markChannelUnread,
+    clearChannelUnreadSource,
     // Exposed so other surfaces (e.g. Home) can project per-item read state
     // off the same NIP-RS read marker without instantiating a second
     // ReadStateManager. readStateVersion is the invalidation signal callers
