@@ -619,26 +619,54 @@ test("defaults stages auto-selection and edits without writing when skipped", as
   expect(await readGlobalConfigSetterCallCount(page)).toBe(0);
 });
 
-test("defaults Back returns to harness setup", async ({ page }) => {
+test("Back preserves incomplete defaults draft without writing", async ({
+  page,
+}) => {
   await installMockBridge(
     page,
     {
       acpRuntimesCatalog: [
+        runtime("buzz-agent", "available", { status: "not_applicable" }),
         runtime("claude", "available", { status: "logged_in" }),
       ],
+      discoverAgentModels: {
+        models: [{ id: "claude-sonnet-4", name: "Claude Sonnet 4" }],
+        supportsSwitching: true,
+      },
+      globalAgentConfig: {
+        env_vars: {},
+        provider: null,
+        model: null,
+        preferred_runtime: null,
+      },
     },
     { skipCommunitySeed: true, skipOnboardingSeed: true },
   );
   await page.goto("/");
   await navigateToSetupPage(page);
   await page.getByTestId("onboarding-setup-next").click();
-  await expect(page.getByTestId("global-agent-default-harness")).toHaveText(
-    "Claude Code",
-  );
-  expect(await readGlobalConfigSetterCallCount(page)).toBe(0);
+
+  const harness = page.getByTestId("global-agent-default-harness");
+  await harness.click();
+  await page
+    .getByTestId("global-agent-default-harness-option-buzz-agent")
+    .click();
+  await page.getByTestId("global-agent-provider").click();
+  await page.getByTestId("global-agent-provider-option-anthropic").click();
+  await expect(page.getByTestId("onboarding-finish")).toBeDisabled();
+
   await page.getByTestId("onboarding-back").click();
   await expect(page.getByTestId("onboarding-page-2")).toBeVisible();
-  await expect.poll(() => readSavedRuntime(page)).toBe("claude");
+  expect(await readSavedRuntime(page)).toBeNull();
+  expect(await readGlobalConfigSetterCallCount(page)).toBe(0);
+
+  await page.getByTestId("onboarding-setup-next").click();
+  await expect(harness).toHaveText("Buzz");
+  await expect(page.getByTestId("global-agent-provider")).toHaveText(
+    "Anthropic",
+  );
+  await expect(page.getByTestId("onboarding-finish")).toBeDisabled();
+  expect(await readGlobalConfigSetterCallCount(page)).toBe(0);
 });
 
 test("defaults auto-selects the only ready visible harness", async ({
@@ -709,7 +737,9 @@ test("Next persists the latest staged harness choice", async ({ page }) => {
   await expect.poll(() => readSavedRuntime(page)).toBe("codex");
 });
 
-test("Next does not wait for a slow save", async ({ page }) => {
+test("Next shows saving state and advances only after persistence", async ({
+  page,
+}) => {
   await installMockBridge(
     page,
     {
@@ -723,7 +753,7 @@ test("Next does not wait for a slow save", async ({ page }) => {
         model: null,
         preferred_runtime: null,
       },
-      setGlobalAgentConfigDelayMs: 1_000,
+      setGlobalAgentConfigDelayMs: 500,
     },
     { skipCommunitySeed: true, skipOnboardingSeed: true },
   );
@@ -736,10 +766,56 @@ test("Next does not wait for a slow save", async ({ page }) => {
   await page.getByTestId("global-agent-default-harness-option-codex").click();
   await page.getByTestId("onboarding-finish").click();
 
-  await expect(page.getByText("Join or create a community")).toBeVisible();
-  expect(await readGlobalConfigSetterCallCount(page)).toBe(1);
+  await expect(page.getByTestId("onboarding-finish")).toHaveText("Saving…");
+  await expect(page.getByTestId("onboarding-config-skip")).toBeDisabled();
+  await expect(page.getByTestId("onboarding-back")).toBeDisabled();
+  await expect(page.getByTestId("onboarding-page-config")).toBeVisible();
   expect(await readSavedRuntime(page)).toBeNull();
-  await expect.poll(() => readSavedRuntime(page)).toBe("codex");
+
+  await expect(page.getByText("Join or create a community")).toBeVisible();
+  expect(await readSavedRuntime(page)).toBe("codex");
+});
+
+test("Next keeps the draft and retries after a save failure", async ({
+  page,
+}) => {
+  await installMockBridge(
+    page,
+    {
+      acpRuntimesCatalog: [
+        runtime("claude", "available", { status: "logged_in" }),
+      ],
+      globalAgentConfig: {
+        env_vars: {},
+        provider: null,
+        model: null,
+        preferred_runtime: null,
+      },
+      setGlobalAgentConfigErrors: ["Disk is read-only", null],
+    },
+    { skipCommunitySeed: true, skipOnboardingSeed: true },
+  );
+  await page.goto("/");
+  await navigateToSetupPage(page);
+  await page.getByTestId("onboarding-setup-next").click();
+  await expect(page.getByTestId("global-agent-default-harness")).toHaveText(
+    "Claude Code",
+  );
+
+  await page.getByTestId("onboarding-finish").click();
+
+  await expect(page.getByTestId("onboarding-page-config")).toBeVisible();
+  await expect(page.getByTestId("onboarding-config-save-error")).toContainText(
+    "Disk is read-only",
+  );
+  await expect(page.getByTestId("onboarding-finish")).toBeEnabled();
+  expect(await readSavedRuntime(page)).toBeNull();
+  expect(await readGlobalConfigSetterCallCount(page)).toBe(1);
+
+  await page.getByTestId("onboarding-finish").click();
+  await expect(page.getByText("Join or create a community")).toBeVisible();
+  expect(await readSavedRuntime(page)).toBe("claude");
+  expect(await readGlobalConfigSetterCallCount(page)).toBe(2);
 });
 
 test("defaults requires a choice when multiple visible harnesses are ready", async ({

@@ -31,11 +31,12 @@ import {
   getReadyOnboardingRuntimes,
   getVisibleOnboardingRuntimes,
 } from "./onboardingRuntimeSelection";
-import type { DefaultConfigStepActions } from "./types";
+import type { DefaultConfigDraft, DefaultConfigStepActions } from "./types";
 
 type DefaultConfigStepProps = {
   actions: DefaultConfigStepActions;
   direction: OnboardingTransitionDirection;
+  draft: DefaultConfigDraft | null;
   readyRuntimeIds: readonly string[];
 };
 
@@ -45,9 +46,15 @@ function formatHarnessLabel(runtime: AcpRuntimeCatalogEntry | undefined) {
 }
 
 function AgentDefaultsSection({
+  draft,
+  isPending,
+  onDraftChange,
   onPersistenceStateChange,
   readyRuntimeIds,
 }: {
+  draft: DefaultConfigDraft | null;
+  isPending: boolean;
+  onDraftChange: (draft: DefaultConfigDraft) => void;
   onPersistenceStateChange: (state: {
     canComplete: boolean;
     commit: () => Promise<void>;
@@ -55,15 +62,24 @@ function AgentDefaultsSection({
   readyRuntimeIds: readonly string[];
 }) {
   const runtimesQuery = useAcpRuntimesQuery();
-  const [config, setConfig] =
-    React.useState<GlobalAgentConfig>(EMPTY_GLOBAL_CONFIG);
-  const [isLoading, setIsLoading] = React.useState(true);
-  const [isCustomProvider, setIsCustomProvider] = React.useState(false);
-  const [isCustomModelEditing, setIsCustomModelEditing] = React.useState(false);
+  const initialDraftRef = React.useRef(draft);
+  const [config, setConfig] = React.useState<GlobalAgentConfig>(
+    initialDraftRef.current?.config ?? EMPTY_GLOBAL_CONFIG,
+  );
+  const [isLoading, setIsLoading] = React.useState(
+    initialDraftRef.current === null,
+  );
+  const [isCustomProvider, setIsCustomProvider] = React.useState(
+    initialDraftRef.current?.isCustomProvider ?? false,
+  );
+  const [isCustomModelEditing, setIsCustomModelEditing] = React.useState(
+    initialDraftRef.current?.isCustomModelEditing ?? false,
+  );
   const [bakedEnv, setBakedEnv] = React.useState<BakedEnvEntry[]>([]);
-  const configRef = React.useRef<GlobalAgentConfig>(EMPTY_GLOBAL_CONFIG);
-  const isDirtyRef = React.useRef(false);
-  const [isSaving, setIsSaving] = React.useState(false);
+  const configRef = React.useRef<GlobalAgentConfig>(
+    initialDraftRef.current?.config ?? EMPTY_GLOBAL_CONFIG,
+  );
+  const isDirtyRef = React.useRef(initialDraftRef.current?.isDirty ?? false);
   const [configIsValid, setConfigIsValid] = React.useState(false);
 
   React.useEffect(() => {
@@ -77,7 +93,10 @@ function AgentDefaultsSection({
 
       if (unmounted) return;
 
-      if (configResult.status === "fulfilled") {
+      if (
+        initialDraftRef.current === null &&
+        configResult.status === "fulfilled"
+      ) {
         configRef.current = configResult.value;
         setConfig(configResult.value);
       }
@@ -140,16 +159,33 @@ function AgentDefaultsSection({
     [readyRuntimes],
   );
 
+  const updateDraft = React.useCallback(
+    (next: GlobalAgentConfig, overrides: Partial<DefaultConfigDraft> = {}) => {
+      isDirtyRef.current = overrides.isDirty ?? true;
+      configRef.current = next;
+      setConfig(next);
+      onDraftChange({
+        config: next,
+        isCustomModelEditing,
+        isCustomProvider,
+        isDirty: isDirtyRef.current,
+        ...overrides,
+      });
+    },
+    [isCustomModelEditing, isCustomProvider, onDraftChange],
+  );
+
   const handleHarnessChange = React.useCallback(
     (runtimeId: string) => {
       const next = resetConfigForHarnessChange(config, runtimeId);
       setIsCustomModelEditing(false);
       setIsCustomProvider(false);
-      isDirtyRef.current = true;
-      configRef.current = next;
-      setConfig(next);
+      updateDraft(next, {
+        isCustomModelEditing: false,
+        isCustomProvider: false,
+      });
     },
-    [config],
+    [config, updateDraft],
   );
 
   React.useEffect(() => {
@@ -165,34 +201,32 @@ function AgentDefaultsSection({
 
   const commitPersistence = React.useCallback(async () => {
     if (!isDirtyRef.current) return;
-    setIsSaving(true);
-    try {
-      const saved = await setGlobalAgentConfig(configRef.current);
-      isDirtyRef.current = false;
-      configRef.current = saved.config;
-      setConfig(saved.config);
-    } finally {
-      setIsSaving(false);
-    }
+    const saved = await setGlobalAgentConfig(configRef.current);
+    isDirtyRef.current = false;
+    configRef.current = saved.config;
+    setConfig(saved.config);
   }, []);
   React.useEffect(() => {
     onPersistenceStateChange({
       // configIsValid comes from AgentConfigFields' onValidityChange and
       // covers model + provider credentials — a harness selection alone is
       // not a working default (e.g. buzz-agent with no provider configured).
-      canComplete: selectedRuntimeId.length > 0 && configIsValid && !isSaving,
+      canComplete: selectedRuntimeId.length > 0 && configIsValid,
       commit: commitPersistence,
     });
   }, [
     commitPersistence,
     configIsValid,
-    isSaving,
     onPersistenceStateChange,
     selectedRuntimeId,
   ]);
 
   return (
-    <section className="w-full space-y-4 text-left text-sm">
+    <fieldset
+      aria-busy={isPending}
+      className="w-full space-y-4 text-left text-sm disabled:pointer-events-none disabled:opacity-70"
+      disabled={isPending}
+    >
       {configSurfaceLoading ? (
         <div className="flex items-center justify-center gap-2 py-4 text-sm text-muted-foreground">
           <Spinner className="h-4 w-4 border-2" />
@@ -229,13 +263,25 @@ function AgentDefaultsSection({
             config={config}
             isCustomModelEditing={isCustomModelEditing}
             isCustomProvider={isCustomProvider}
-            onConfigChange={(next) => {
-              isDirtyRef.current = true;
-              configRef.current = next;
-              setConfig(next);
+            onConfigChange={updateDraft}
+            onCustomModelEditingChange={(next) => {
+              setIsCustomModelEditing(next);
+              onDraftChange({
+                config: configRef.current,
+                isCustomModelEditing: next,
+                isCustomProvider,
+                isDirty: isDirtyRef.current,
+              });
             }}
-            onCustomModelEditingChange={setIsCustomModelEditing}
-            onIsCustomProviderChange={setIsCustomProvider}
+            onIsCustomProviderChange={(next) => {
+              setIsCustomProvider(next);
+              onDraftChange({
+                config: configRef.current,
+                isCustomModelEditing,
+                isCustomProvider: next,
+                isDirty: isDirtyRef.current,
+              });
+            }}
             onValidityChange={setConfigIsValid}
             placeholderClassName="text-foreground/70"
             runtimeFileConfig={runtimeFileConfig}
@@ -246,7 +292,7 @@ function AgentDefaultsSection({
           />
         </div>
       )}
-    </section>
+    </fieldset>
   );
 }
 
@@ -258,21 +304,39 @@ function AgentDefaultsSection({
 export function DefaultConfigStep({
   actions,
   direction,
+  draft,
   readyRuntimeIds,
 }: DefaultConfigStepProps) {
   const [persistenceState, setPersistenceState] = React.useState<{
     canComplete: boolean;
     commit: () => Promise<void>;
   }>({ canComplete: false, commit: () => Promise.resolve() });
-  const handleComplete = React.useCallback(() => {
-    void persistenceState.commit().catch(() => undefined);
-    actions.complete();
-  }, [actions, persistenceState]);
+  const [isSaving, setIsSaving] = React.useState(false);
+  const [saveError, setSaveError] = React.useState<string | null>(null);
 
-  const handleBack = React.useCallback(() => {
-    void persistenceState.commit().catch(() => undefined);
-    actions.back();
-  }, [actions, persistenceState]);
+  const handleComplete = React.useCallback(async () => {
+    if (isSaving) return;
+    setIsSaving(true);
+    setSaveError(null);
+    try {
+      await persistenceState.commit();
+      actions.discardDraft();
+      actions.complete();
+    } catch (cause) {
+      setSaveError(
+        cause instanceof Error
+          ? cause.message
+          : "Couldn’t save model settings.",
+      );
+    } finally {
+      setIsSaving(false);
+    }
+  }, [actions, isSaving, persistenceState]);
+
+  const handleSkip = React.useCallback(() => {
+    actions.discardDraft();
+    actions.complete();
+  }, [actions]);
 
   return (
     <OnboardingSlideTransition
@@ -295,6 +359,9 @@ export function DefaultConfigStep({
       <div className="flex w-full flex-1 items-center justify-center py-10">
         <div className="w-full max-w-[328px]">
           <AgentDefaultsSection
+            draft={draft}
+            isPending={isSaving}
+            onDraftChange={actions.updateDraft}
             onPersistenceStateChange={setPersistenceState}
             readyRuntimeIds={readyRuntimeIds}
           />
@@ -307,16 +374,17 @@ export function DefaultConfigStep({
           <Button
             className={`${ONBOARDING_PRIMARY_CTA_CLASS} text-sm`}
             data-testid="onboarding-finish"
-            disabled={!persistenceState.canComplete}
-            onClick={handleComplete}
+            disabled={!persistenceState.canComplete || isSaving}
+            onClick={() => void handleComplete()}
             type="button"
           >
-            Next
+            {isSaving ? "Saving…" : "Next"}
           </Button>
           <Button
             className="absolute left-full ml-3 h-9 animate-in whitespace-nowrap rounded-full px-6 text-sm fade-in fill-mode-backwards [animation-delay:1000ms] animation-duration-[500ms] hover:bg-foreground/10 motion-reduce:animate-none"
             data-testid="onboarding-config-skip"
-            onClick={actions.complete}
+            disabled={isSaving}
+            onClick={handleSkip}
             type="button"
             variant="ghost"
           >
@@ -327,19 +395,28 @@ export function DefaultConfigStep({
         <Button
           className="h-9 rounded-full bg-foreground/10 px-6 text-sm hover:bg-foreground/15"
           data-testid="onboarding-back"
-          onClick={handleBack}
+          disabled={isSaving}
+          onClick={actions.back}
           type="button"
           variant="ghost"
         >
           Back
         </Button>
 
+        {saveError ? (
+          <p
+            className="max-w-[440px] text-center text-xs text-destructive"
+            data-testid="onboarding-config-save-error"
+            role="alert"
+          >
+            Couldn’t save model settings. {saveError} Try again.
+          </p>
+        ) : null}
+
         <p className="text-xs text-foreground/50">
           Configure default models in{" "}
-          <span className="text-foreground/70 underline underline-offset-2">
-            Settings → Agents
-          </span>{" "}
-          after setup.
+          <span className="text-foreground/70">Settings → Agents</span> after
+          setup.
         </p>
       </OnboardingFooter>
     </OnboardingSlideTransition>
