@@ -6,6 +6,44 @@ code style, PR process, architecture), see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ---
 
+## Divine Creative Fork Policy
+
+These rules apply when the working repository is
+`Divine-Creative-Ministries/buzz`, or when work is based on that fork's
+`dcm-production` branch. Before syncing upstream, changing branch strategy,
+releasing, or deploying, read
+[docs/DIVINE_CREATIVE_FORK_WORKFLOW.md](docs/DIVINE_CREATIVE_FORK_WORKFLOW.md).
+
+- Treat the fork's `main` branch as an exact, fast-forward-only mirror of
+  `block/buzz:main`. Never commit Divine Creative changes to it.
+- Put Divine Creative changes on short-lived `agent/*` branches and open pull
+  requests into `dcm-production`. Do not push directly to `main` or
+  `dcm-production`, and never force-push either branch.
+- Fetch both `origin` and `upstream` before selecting a base or syncing. Branch
+  general-purpose upstream contributions from `upstream/main`; do not include
+  private integrations, deployment configuration, or Divine Creative branding
+  in those branches.
+- Before merging a new upstream version into `dcm-production`, create and push
+  a recovery tag for the current production commit. Perform the merge on a
+  short-lived sync branch and merge it through a reviewed pull request.
+- Resolve conflicts by understanding both changes. Never use blanket
+  `ours`/`theirs`, "accept all," history rewriting, or change deletion merely
+  to make a merge pass. Explain intentional removals in the pull request.
+- Run the repository quality gates and relevant client/integration tests after
+  every upstream sync. A textually clean merge can still have behavioral or
+  schema conflicts.
+- Never develop by editing `/opt/buzz`, running containers, or production data
+  on the VPS. Build from a reviewed commit, deploy an immutable image, record
+  its source SHA and digest, back up state first, and retain a tested rollback
+  path.
+- Never commit credentials, `.env` contents, private keys, backup archives, or
+  production data. Deployment is a separate, explicitly authorized action; a
+  code change or merged pull request does not authorize it.
+- If the requested action would violate these rules, or the repository/branch
+  state is ambiguous, stop and ask for direction instead of guessing.
+
+---
+
 ## Ecosystem
 
 Buzz spans five repos. This one (`block/buzz`) is the OSS source for the relay, desktop, mobile, and CLI. The others handle internal builds and deployment:
