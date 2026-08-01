@@ -247,24 +247,6 @@ export function writeObservedUnreadToStorage(
 }
 
 /**
- * Remove a single channel's observed events from storage.
- * Uses the canonical decode→validate→prune→write path so validation and
- * pruning invariants always hold. An undecodable bucket is dropped wholesale
- * (it's a disposable cache).
- */
-export function removeChannelFromObservedUnreadStorage(
-  pubkey: string,
-  relayUrl: string,
-  channelId: string,
-): void {
-  const stored = readObservedUnreadFromStorage(pubkey, relayUrl);
-  if (!stored) return;
-  if (!stored.has(channelId)) return;
-  stored.delete(channelId);
-  writeObservedUnreadToStorage(pubkey, relayUrl, stored);
-}
-
-/**
  * Delete the entire observed-unread storage bucket for a scope.
  * Used on mark-all-read or when all channels are cleared.
  */

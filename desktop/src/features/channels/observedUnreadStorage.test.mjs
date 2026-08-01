@@ -7,7 +7,6 @@ import {
   observedUnreadStorageKey,
   OBSERVED_UNREAD_STORAGE_PREFIX,
   readObservedUnreadFromStorage,
-  removeChannelFromObservedUnreadStorage,
   writeObservedUnreadToStorage,
 } from "./observedUnreadStorage.ts";
 import { READ_STATE_HORIZON_SECONDS } from "./readState/readStateFormat.ts";
@@ -85,27 +84,25 @@ const STALE_AT = NOW_SECONDS - READ_STATE_HORIZON_SECONDS - 100;
 
 // ── observedUnreadStorageKey ──────────────────────────────────────────────────
 
-test("observedUnreadStorageKey normalizes relay URL", () => {
-  const k1 = observedUnreadStorageKey("pk1", "WSS://Relay.Example.Com/");
-  const k2 = observedUnreadStorageKey("pk1", "wss://relay.example.com");
-  assert.equal(k1, k2);
-});
-
-test("observedUnreadStorageKey differs for different relays", () => {
-  const kA = observedUnreadStorageKey("pk1", "wss://relay-a.example.com");
-  const kB = observedUnreadStorageKey("pk1", "wss://relay-b.example.com");
-  assert.notEqual(kA, kB);
-});
-
-test("observedUnreadStorageKey differs for different pubkeys", () => {
-  const k1 = observedUnreadStorageKey("pk1", "wss://relay.example.com");
-  const k2 = observedUnreadStorageKey("pk2", "wss://relay.example.com");
-  assert.notEqual(k1, k2);
-});
-
-test("observedUnreadStorageKey has correct prefix", () => {
-  const k = observedUnreadStorageKey("pk1", "wss://relay.example.com");
-  assert.ok(k.startsWith(`${OBSERVED_UNREAD_STORAGE_PREFIX}:`));
+test("observedUnreadStorageKey: prefix, normalization, and isolation", () => {
+  const base = observedUnreadStorageKey("pk1", "wss://relay.example.com");
+  // Has correct prefix.
+  assert.ok(base.startsWith(`${OBSERVED_UNREAD_STORAGE_PREFIX}:`));
+  // URL normalizes (trailing slash, mixed case).
+  assert.equal(
+    base,
+    observedUnreadStorageKey("pk1", "WSS://Relay.Example.Com/"),
+  );
+  // Relay isolation.
+  assert.notEqual(
+    base,
+    observedUnreadStorageKey("pk1", "wss://relay-b.example.com"),
+  );
+  // Pubkey isolation.
+  assert.notEqual(
+    base,
+    observedUnreadStorageKey("pk2", "wss://relay.example.com"),
+  );
 });
 
 // ── write/read round-trip ─────────────────────────────────────────────────────
@@ -153,86 +150,42 @@ test("round-trip: relay A rows not readable under relay B", () => {
   }
 });
 
-test("round-trip: different pubkeys have isolated buckets", () => {
+test("read returns null for missing key, corrupt JSON, and non-object eventsByChannel", () => {
   const { restore } = makeIsolatedStorage();
   try {
-    const relay = "wss://relay.example.com";
-    const map1 = makeEventsByChannel([
-      ["ch-1", [makeEvent({ id: "e1", createdAt: FRESH_AT })]],
-    ]);
-    const map2 = makeEventsByChannel([
-      ["ch-2", [makeEvent({ id: "e2", createdAt: FRESH_AT })]],
-    ]);
-
-    writeObservedUnreadToStorage("pk1", relay, map1);
-    writeObservedUnreadToStorage("pk2", relay, map2);
-
-    const r1 = readObservedUnreadFromStorage("pk1", relay);
-    const r2 = readObservedUnreadFromStorage("pk2", relay);
-
-    assert.ok(r1?.has("ch-1"), "pk1 should see ch-1");
-    assert.ok(!r1?.has("ch-2"), "pk1 should not see ch-2");
-    assert.ok(r2?.has("ch-2"), "pk2 should see ch-2");
-    assert.ok(!r2?.has("ch-1"), "pk2 should not see ch-1");
-  } finally {
-    restore();
-  }
-});
-
-test("round-trip: trailing slash normalizes to same bucket", () => {
-  const { restore } = makeIsolatedStorage();
-  try {
-    const pubkey = "pk1";
-    const relaySlash = "wss://relay.example.com/";
-    const relayNoSlash = "wss://relay.example.com";
-    const map = makeEventsByChannel([
-      ["ch-1", [makeEvent({ id: "e1", createdAt: FRESH_AT })]],
-    ]);
-
-    writeObservedUnreadToStorage(pubkey, relaySlash, map);
-    const result = readObservedUnreadFromStorage(pubkey, relayNoSlash);
-
-    assert.ok(
-      result?.has("ch-1"),
-      "normalized URL should resolve to same bucket",
+    // Missing key.
+    assert.equal(
+      readObservedUnreadFromStorage("pk1", "wss://relay.example.com"),
+      null,
     );
-  } finally {
-    restore();
-  }
-});
 
-test("read returns null for missing key", () => {
-  const { restore } = makeIsolatedStorage();
-  try {
-    const result = readObservedUnreadFromStorage(
-      "pk1",
-      "wss://relay.example.com",
-    );
-    assert.equal(result, null);
-  } finally {
-    restore();
-  }
-});
-
-test("read returns null for corrupt JSON", () => {
-  const { restore } = makeIsolatedStorage();
-  try {
+    // Corrupt JSON.
     const key = observedUnreadStorageKey("pk1", "wss://relay.example.com");
     window.localStorage.setItem(key, "not-json{{{");
-    const result = readObservedUnreadFromStorage(
-      "pk1",
-      "wss://relay.example.com",
+    assert.equal(
+      readObservedUnreadFromStorage("pk1", "wss://relay.example.com"),
+      null,
     );
-    assert.equal(result, null);
+
+    // eventsByChannel is an array (not an object).
+    window.localStorage.setItem(
+      key,
+      JSON.stringify({ updatedAt: Date.now(), eventsByChannel: [1, 2, 3] }),
+    );
+    assert.equal(
+      readObservedUnreadFromStorage("pk1", "wss://relay.example.com"),
+      null,
+    );
   } finally {
     restore();
   }
 });
 
-test("read discards malformed events (missing id)", () => {
+test("read discards malformed events and keeps valid ones", () => {
   const { restore } = makeIsolatedStorage();
   try {
     const key = observedUnreadStorageKey("pk1", "wss://relay.example.com");
+    const valid = makeEvent({ id: "e-ok", createdAt: FRESH_AT });
     window.localStorage.setItem(
       key,
       JSON.stringify({
@@ -240,36 +193,6 @@ test("read discards malformed events (missing id)", () => {
         eventsByChannel: {
           "ch-1": [
             { createdAt: FRESH_AT }, // missing id
-            makeEvent({ id: "e-ok", createdAt: FRESH_AT }),
-          ],
-        },
-      }),
-    );
-    const result = readObservedUnreadFromStorage(
-      "pk1",
-      "wss://relay.example.com",
-    );
-    assert.ok(result !== null);
-    const ch = result.get("ch-1");
-    assert.ok(ch !== undefined);
-    assert.ok(!ch.has(undefined), "malformed event should be absent");
-    assert.ok(ch.has("e-ok"), "valid event should be present");
-    assert.equal(ch.size, 1);
-  } finally {
-    restore();
-  }
-});
-
-test("read discards events with non-finite createdAt", () => {
-  const { restore } = makeIsolatedStorage();
-  try {
-    const key = observedUnreadStorageKey("pk1", "wss://relay.example.com");
-    window.localStorage.setItem(
-      key,
-      JSON.stringify({
-        updatedAt: Date.now(),
-        eventsByChannel: {
-          "ch-1": [
             {
               id: "e-inf",
               createdAt: Infinity,
@@ -278,7 +201,7 @@ test("read discards events with non-finite createdAt", () => {
               countsTowardBadge: false,
               countsTowardAppBadge: false,
             },
-            makeEvent({ id: "e-ok", createdAt: FRESH_AT }),
+            valid,
           ],
         },
       }),
@@ -288,26 +211,9 @@ test("read discards events with non-finite createdAt", () => {
       "wss://relay.example.com",
     );
     const ch = result?.get("ch-1");
-    assert.ok(!ch?.has("e-inf"), "Infinity createdAt should be discarded");
-    assert.ok(ch?.has("e-ok"), "finite createdAt should be kept");
-  } finally {
-    restore();
-  }
-});
-
-test("read returns null when eventsByChannel is not an object", () => {
-  const { restore } = makeIsolatedStorage();
-  try {
-    const key = observedUnreadStorageKey("pk1", "wss://relay.example.com");
-    window.localStorage.setItem(
-      key,
-      JSON.stringify({ updatedAt: Date.now(), eventsByChannel: [1, 2, 3] }),
-    );
-    const result = readObservedUnreadFromStorage(
-      "pk1",
-      "wss://relay.example.com",
-    );
-    assert.equal(result, null);
+    assert.ok(ch !== undefined);
+    assert.equal(ch.size, 1, "only the valid event should survive");
+    assert.ok(ch.has("e-ok"), "valid event must be kept");
   } finally {
     restore();
   }
@@ -315,73 +221,56 @@ test("read returns null when eventsByChannel is not an object", () => {
 
 // ── age pruning ───────────────────────────────────────────────────────────────
 
-test("write prunes stale events before persisting", () => {
+test("write and read prune stale events; write removes key when all stale", () => {
   const { restore } = makeIsolatedStorage();
   try {
     const pubkey = "pk1";
     const relay = "wss://relay.example.com";
-    // stale event alongside a fresh one
-    const map = makeEventsByChannel([
-      [
-        "ch-1",
+    const key = observedUnreadStorageKey(pubkey, relay);
+
+    // write() prunes on encode path.
+    writeObservedUnreadToStorage(
+      pubkey,
+      relay,
+      makeEventsByChannel([
         [
-          makeEvent({ id: "stale", createdAt: STALE_AT }),
-          makeEvent({ id: "fresh", createdAt: FRESH_AT }),
+          "ch-1",
+          [
+            makeEvent({ id: "stale", createdAt: STALE_AT }),
+            makeEvent({ id: "fresh", createdAt: FRESH_AT }),
+          ],
         ],
-      ],
-    ]);
-
-    writeObservedUnreadToStorage(pubkey, relay, map);
-    const result = readObservedUnreadFromStorage(pubkey, relay);
-
-    const ch = result?.get("ch-1");
+      ]),
+    );
+    const ch = readObservedUnreadFromStorage(pubkey, relay)?.get("ch-1");
     assert.ok(!ch?.has("stale"), "stale event should be pruned on write");
     assert.ok(ch?.has("fresh"), "fresh event should survive");
-  } finally {
-    restore();
-  }
-});
 
-test("read prunes stale events from persisted data", () => {
-  const { restore } = makeIsolatedStorage();
-  try {
-    const key = observedUnreadStorageKey("pk1", "wss://relay.example.com");
-    // Directly write stale data bypassing write() pruning
+    // read() prunes bypassed stale data.
     window.localStorage.setItem(
       key,
       JSON.stringify({
         updatedAt: Date.now(),
         eventsByChannel: {
-          "ch-1": [
-            makeEvent({ id: "stale", createdAt: STALE_AT }),
-            makeEvent({ id: "fresh", createdAt: FRESH_AT }),
+          "ch-r": [
+            makeEvent({ id: "stale-r", createdAt: STALE_AT }),
+            makeEvent({ id: "fresh-r", createdAt: FRESH_AT }),
           ],
         },
       }),
     );
-    const result = readObservedUnreadFromStorage(
-      "pk1",
-      "wss://relay.example.com",
+    const ch2 = readObservedUnreadFromStorage(pubkey, relay)?.get("ch-r");
+    assert.ok(!ch2?.has("stale-r"), "stale event should be pruned on read");
+    assert.ok(ch2?.has("fresh-r"), "fresh event should survive on read");
+
+    // All-stale write removes the key entirely.
+    writeObservedUnreadToStorage(
+      pubkey,
+      relay,
+      makeEventsByChannel([
+        ["ch-1", [makeEvent({ id: "stale2", createdAt: STALE_AT })]],
+      ]),
     );
-    const ch = result?.get("ch-1");
-    assert.ok(!ch?.has("stale"), "stale event should be pruned on read");
-    assert.ok(ch?.has("fresh"), "fresh event should survive");
-  } finally {
-    restore();
-  }
-});
-
-test("write removes key entirely when all events are stale", () => {
-  const { restore } = makeIsolatedStorage();
-  try {
-    const pubkey = "pk1";
-    const relay = "wss://relay.example.com";
-    const map = makeEventsByChannel([
-      ["ch-1", [makeEvent({ id: "stale", createdAt: STALE_AT })]],
-    ]);
-
-    writeObservedUnreadToStorage(pubkey, relay, map);
-    const key = observedUnreadStorageKey(pubkey, relay);
     assert.equal(
       window.localStorage.getItem(key),
       null,
@@ -392,123 +281,40 @@ test("write removes key entirely when all events are stale", () => {
   }
 });
 
-// ── per-channel cap ───────────────────────────────────────────────────────────
+// ── caps ──────────────────────────────────────────────────────────────────────
 
-test("write caps per channel at 1000 events keeping newest", () => {
+test("write caps per channel at 1000 and globally at 5000 keeping newest", () => {
   const { restore } = makeIsolatedStorage();
   try {
     const pubkey = "pk1";
     const relay = "wss://relay.example.com";
+
+    // Per-channel: 1100 events → capped to 1000, oldest evicted.
     const events = Array.from({ length: 1100 }, (_, i) =>
       makeEvent({ id: `e-${i}`, createdAt: FRESH_AT + i }),
     );
-    const map = makeEventsByChannel([["ch-1", events]]);
-
-    writeObservedUnreadToStorage(pubkey, relay, map);
-    const result = readObservedUnreadFromStorage(pubkey, relay);
-
-    const ch = result?.get("ch-1");
+    writeObservedUnreadToStorage(
+      pubkey,
+      relay,
+      makeEventsByChannel([["ch-1", events]]),
+    );
+    const ch = readObservedUnreadFromStorage(pubkey, relay)?.get("ch-1");
     assert.equal(ch?.size, 1000, "should be capped at 1000");
-    // Oldest events (lowest createdAt) should be evicted.
     assert.ok(!ch?.has("e-0"), "oldest event should be evicted");
     assert.ok(ch?.has("e-1099"), "newest event should survive");
-  } finally {
-    restore();
-  }
-});
 
-// ── global cap ────────────────────────────────────────────────────────────────
-
-test("write caps globally at 5000 events across channels", () => {
-  const { restore } = makeIsolatedStorage();
-  try {
-    const pubkey = "pk1";
-    const relay = "wss://relay.example.com";
-    // 6 channels × 1000 events each = 6000 total, should be trimmed to 5000
-    const entries = Array.from({ length: 6 }, (_, ch) => [
-      `channel-${ch}`,
+    // Global: 6 channels × 1000 = 6000 → trimmed to ≤ 5000.
+    const entries = Array.from({ length: 6 }, (_, c) => [
+      `channel-${c}`,
       Array.from({ length: 1000 }, (_, i) =>
-        makeEvent({
-          id: `ch${ch}-e${i}`,
-          createdAt: FRESH_AT + ch * 10000 + i,
-        }),
+        makeEvent({ id: `ch${c}-e${i}`, createdAt: FRESH_AT + c * 10000 + i }),
       ),
     ]);
-    const map = makeEventsByChannel(entries);
-
-    writeObservedUnreadToStorage(pubkey, relay, map);
+    writeObservedUnreadToStorage(pubkey, relay, makeEventsByChannel(entries));
     const result = readObservedUnreadFromStorage(pubkey, relay);
-
     let total = 0;
-    for (const eventsById of result.values()) {
-      total += eventsById.size;
-    }
+    for (const eventsById of result.values()) total += eventsById.size;
     assert.ok(total <= 5000, `total ${total} should be <= 5000`);
-  } finally {
-    restore();
-  }
-});
-
-// ── removeChannelFromObservedUnreadStorage ────────────────────────────────────
-
-test("removeChannel removes only the specified channel", () => {
-  const { restore } = makeIsolatedStorage();
-  try {
-    const pubkey = "pk1";
-    const relay = "wss://relay.example.com";
-    const map = makeEventsByChannel([
-      ["ch-1", [makeEvent({ id: "e1", createdAt: FRESH_AT })]],
-      ["ch-2", [makeEvent({ id: "e2", createdAt: FRESH_AT })]],
-    ]);
-
-    writeObservedUnreadToStorage(pubkey, relay, map);
-    removeChannelFromObservedUnreadStorage(pubkey, relay, "ch-1");
-
-    const result = readObservedUnreadFromStorage(pubkey, relay);
-    assert.ok(!result?.has("ch-1"), "ch-1 should be removed");
-    assert.ok(result?.has("ch-2"), "ch-2 should remain");
-  } finally {
-    restore();
-  }
-});
-
-test("removeChannel removes key entirely when last channel removed", () => {
-  const { restore } = makeIsolatedStorage();
-  try {
-    const pubkey = "pk1";
-    const relay = "wss://relay.example.com";
-    const map = makeEventsByChannel([
-      ["ch-1", [makeEvent({ id: "e1", createdAt: FRESH_AT })]],
-    ]);
-
-    writeObservedUnreadToStorage(pubkey, relay, map);
-    removeChannelFromObservedUnreadStorage(pubkey, relay, "ch-1");
-
-    const key = observedUnreadStorageKey(pubkey, relay);
-    assert.equal(
-      window.localStorage.getItem(key),
-      null,
-      "key should be absent after last channel removed",
-    );
-  } finally {
-    restore();
-  }
-});
-
-test("removeChannel is a no-op when channel not present", () => {
-  const { restore } = makeIsolatedStorage();
-  try {
-    const pubkey = "pk1";
-    const relay = "wss://relay.example.com";
-    const map = makeEventsByChannel([
-      ["ch-1", [makeEvent({ id: "e1", createdAt: FRESH_AT })]],
-    ]);
-
-    writeObservedUnreadToStorage(pubkey, relay, map);
-    removeChannelFromObservedUnreadStorage(pubkey, relay, "ch-nonexistent");
-
-    const result = readObservedUnreadFromStorage(pubkey, relay);
-    assert.ok(result?.has("ch-1"), "ch-1 should still be present");
   } finally {
     restore();
   }
@@ -516,46 +322,37 @@ test("removeChannel is a no-op when channel not present", () => {
 
 // ── clearObservedUnreadStorage ────────────────────────────────────────────────
 
-test("clearObservedUnreadStorage removes the entire scope bucket", () => {
-  const { restore } = makeIsolatedStorage();
-  try {
-    const pubkey = "pk1";
-    const relay = "wss://relay.example.com";
-    const map = makeEventsByChannel([
-      ["ch-1", [makeEvent({ id: "e1", createdAt: FRESH_AT })]],
-    ]);
-
-    writeObservedUnreadToStorage(pubkey, relay, map);
-    clearObservedUnreadStorage(pubkey, relay);
-
-    const result = readObservedUnreadFromStorage(pubkey, relay);
-    assert.equal(result, null, "scope bucket should be cleared");
-  } finally {
-    restore();
-  }
-});
-
-test("clearObservedUnreadStorage does not affect other scopes", () => {
+test("clearObservedUnreadStorage: removes scope bucket without affecting others", () => {
   const { restore } = makeIsolatedStorage();
   try {
     const relayA = "wss://relay-a.example.com";
     const relayB = "wss://relay-b.example.com";
-    const mapA = makeEventsByChannel([
-      ["ch-a", [makeEvent({ id: "ea", createdAt: FRESH_AT })]],
-    ]);
-    const mapB = makeEventsByChannel([
-      ["ch-b", [makeEvent({ id: "eb", createdAt: FRESH_AT })]],
-    ]);
+    writeObservedUnreadToStorage(
+      "pk1",
+      relayA,
+      makeEventsByChannel([
+        ["ch-a", [makeEvent({ id: "ea", createdAt: FRESH_AT })]],
+      ]),
+    );
+    writeObservedUnreadToStorage(
+      "pk1",
+      relayB,
+      makeEventsByChannel([
+        ["ch-b", [makeEvent({ id: "eb", createdAt: FRESH_AT })]],
+      ]),
+    );
 
-    writeObservedUnreadToStorage("pk1", relayA, mapA);
-    writeObservedUnreadToStorage("pk1", relayB, mapB);
     clearObservedUnreadStorage("pk1", relayA);
 
-    const resultA = readObservedUnreadFromStorage("pk1", relayA);
-    const resultB = readObservedUnreadFromStorage("pk1", relayB);
-
-    assert.equal(resultA, null, "relay A bucket should be cleared");
-    assert.ok(resultB?.has("ch-b"), "relay B bucket should be unaffected");
+    assert.equal(
+      readObservedUnreadFromStorage("pk1", relayA),
+      null,
+      "cleared bucket must be null",
+    );
+    assert.ok(
+      readObservedUnreadFromStorage("pk1", relayB)?.has("ch-b"),
+      "other scope must be unaffected",
+    );
   } finally {
     restore();
   }
@@ -563,7 +360,7 @@ test("clearObservedUnreadStorage does not affect other scopes", () => {
 
 // ── deriveLatestByChannel ─────────────────────────────────────────────────────
 
-test("deriveLatestByChannel returns max createdAt per channel", () => {
+test("deriveLatestByChannel: max createdAt per channel, empty map returns empty", () => {
   const map = makeEventsByChannel([
     [
       "ch-1",
@@ -575,79 +372,13 @@ test("deriveLatestByChannel returns max createdAt per channel", () => {
     ],
     ["ch-2", [makeEvent({ id: "e4", createdAt: 50 })]],
   ]);
-
   const latest = deriveLatestByChannel(map);
-
   assert.equal(latest.get("ch-1"), 200);
   assert.equal(latest.get("ch-2"), 50);
-});
-
-test("deriveLatestByChannel returns empty map for empty input", () => {
-  const latest = deriveLatestByChannel(new Map());
-  assert.equal(latest.size, 0);
+  assert.equal(deriveLatestByChannel(new Map()).size, 0);
 });
 
 // ── persistence + lifecycle scenarios ────────────────────────────────────────
-
-test("record→pending-debounce→pagehide-flush→hydrate: event is present after reload", () => {
-  // This test models the exact Cmd+R scenario:
-  // 1. An event is observed (recorded into the in-memory map).
-  // 2. The debounce timer is pending (not fired yet).
-  // 3. pagehide fires, triggering a synchronous flush.
-  // 4. A fresh read (simulating the next boot hydration) finds the event.
-
-  const { restore } = makeIsolatedStorage();
-  try {
-    const pubkey = "pk1";
-    const relay = "wss://relay.example.com";
-    const event = makeEvent({ id: "e-pending", createdAt: FRESH_AT });
-
-    // Step 1-2: event observed, debounce is pending (we simulate by not having
-    // called writeObservedUnreadToStorage yet — the timer hasn't fired).
-    const liveMap = makeEventsByChannel([["ch-1", [event]]]);
-
-    // Step 3: synchronous flush (what flushObservedUnreadWrite does).
-    writeObservedUnreadToStorage(pubkey, relay, liveMap);
-
-    // Step 4: read back (next boot hydration).
-    const result = readObservedUnreadFromStorage(pubkey, relay);
-
-    assert.ok(
-      result?.get("ch-1")?.has("e-pending"),
-      "event recorded before pagehide must survive hydration",
-    );
-  } finally {
-    restore();
-  }
-});
-
-test("mark-read clears channel from storage: explicit channel read persists after reload", () => {
-  // Events exist → channel marked read (clearObserved path) → storage cleared
-  // → reload → channel should NOT re-appear as unread.
-
-  const { restore } = makeIsolatedStorage();
-  try {
-    const pubkey = "pk1";
-    const relay = "wss://relay.example.com";
-    const event = makeEvent({ id: "e1", createdAt: FRESH_AT });
-    const map = makeEventsByChannel([["ch-1", [event]]]);
-
-    // Events persisted.
-    writeObservedUnreadToStorage(pubkey, relay, map);
-
-    // Channel marked read — remove from storage (clearObserved path).
-    removeChannelFromObservedUnreadStorage(pubkey, relay, "ch-1");
-
-    // Reload: read back.
-    const result = readObservedUnreadFromStorage(pubkey, relay);
-    assert.ok(
-      !result?.has("ch-1"),
-      "ch-1 should not appear after mark-read + reload",
-    );
-  } finally {
-    restore();
-  }
-});
 
 test("thread:rootA marker prunes only rootA events, leaving rootB unread", () => {
   // Validates the plan requirement: opening thread A must not clear thread B.
@@ -697,33 +428,6 @@ test("thread:rootA marker prunes only rootA events, leaving rootB unread", () =>
     // latestByChannel for ch-1 should still reflect thread B.
     const latest = deriveLatestByChannel(result);
     assert.equal(latest.get("ch-1"), FRESH_AT + 10);
-  } finally {
-    restore();
-  }
-});
-
-test("msg:<id> marker prunes only that message", () => {
-  const { restore } = makeIsolatedStorage();
-  try {
-    const eA = makeEvent({ id: "eA", createdAt: FRESH_AT });
-    const eB = makeEvent({ id: "eB", createdAt: FRESH_AT + 1 });
-    const map = makeEventsByChannel([["ch-1", [eA, eB]]]);
-    writeObservedUnreadToStorage("pk1", "wss://relay.example.com", map);
-
-    // Prune eA only.
-    const stored = readObservedUnreadFromStorage(
-      "pk1",
-      "wss://relay.example.com",
-    );
-    stored.get("ch-1").delete("eA");
-    writeObservedUnreadToStorage("pk1", "wss://relay.example.com", stored);
-
-    const result = readObservedUnreadFromStorage(
-      "pk1",
-      "wss://relay.example.com",
-    );
-    assert.ok(!result?.get("ch-1")?.has("eA"), "eA should be removed");
-    assert.ok(result?.get("ch-1")?.has("eB"), "eB should remain");
   } finally {
     restore();
   }
