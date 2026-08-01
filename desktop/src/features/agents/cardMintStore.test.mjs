@@ -96,6 +96,43 @@ describe("cardMintStore", () => {
     assert.equal(getCardMintJobs()[0].error, "No OPENAI_API_KEY found.");
   });
 
+  it("replaces a 401 HTTP error with an actionable update-key message", async () => {
+    await runCardMintJob(INPUT, () =>
+      Promise.reject(
+        new Error(
+          "Card mint failed (HTTP 401 Unauthorized): Incorrect API key provided: sk-proj-***",
+        ),
+      ),
+    );
+    const { error } = getCardMintJobs()[0];
+    assert.ok(
+      error?.includes("invalid or expired"),
+      `expected 'invalid or expired' in: ${error}`,
+    );
+    assert.ok(
+      error?.includes("Update API key"),
+      `expected 'Update API key' in: ${error}`,
+    );
+  });
+
+  it("replaces an 'Incorrect API key' error without an HTTP status code", async () => {
+    await runCardMintJob(INPUT, () =>
+      Promise.reject(new Error("Incorrect API key provided: sk-proj-***")),
+    );
+    const { error } = getCardMintJobs()[0];
+    assert.ok(
+      error?.includes("invalid or expired"),
+      `expected 'invalid or expired' in: ${error}`,
+    );
+  });
+
+  it("does not apply the 401 branch to generic non-auth errors", async () => {
+    await runCardMintJob(INPUT, () =>
+      Promise.reject(new Error("Connection timeout")),
+    );
+    assert.equal(getCardMintJobs()[0].error, "Connection timeout");
+  });
+
   it("viewMintedCardJob moves a done job into the viewer and clears the chip", async () => {
     await runCardMintJob(INPUT, () => Promise.resolve(CARD));
     const jobId = getCardMintJobs()[0].jobId;

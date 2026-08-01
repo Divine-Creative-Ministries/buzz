@@ -121,6 +121,7 @@ export function AgentCardMintDialog({
   const [memoryLevel, setMemoryLevel] =
     React.useState<SnapshotMemoryLevel>("none");
   const [keyDraft, setKeyDraft] = React.useState("");
+  const [editingKey, setEditingKey] = React.useState(false);
 
   const queryClient = useQueryClient();
 
@@ -153,6 +154,7 @@ export function AgentCardMintDialog({
         queryKey: globalAgentConfigQueryKey,
       });
       setKeyDraft("");
+      setEditingKey(false);
       toast.success(
         "API key saved to your agent defaults. Running agents pick it up on their next restart.",
       );
@@ -188,7 +190,7 @@ export function AgentCardMintDialog({
           </DialogDescription>
         </DialogHeader>
 
-        {needsKey ? (
+        {needsKey || editingKey ? (
           <div
             className="flex flex-col gap-4"
             data-testid="agent-card-key-setup"
@@ -196,13 +198,17 @@ export function AgentCardMintDialog({
             <div className="flex flex-col gap-2 rounded-md border border-border p-3">
               <span className="flex items-center gap-1.5 text-sm font-medium">
                 <KeyRound className="h-3.5 w-3.5" />
-                One-time setup: OpenAI API key
+                {needsKey
+                  ? "One-time setup: OpenAI API key"
+                  : "Update OpenAI API key"}
               </span>
               <p className="text-xs text-muted-foreground">
                 Minting a card costs money — it generates the art and card text
                 through the OpenAI API with your key (typically well under a
-                dollar per mint, billed by OpenAI). The key is saved to your
-                agent defaults, so you only do this once.
+                dollar per mint, billed by OpenAI). The key is saved as{" "}
+                <code className="font-mono">OPENAI_API_KEY</code> in your agent
+                defaults env — that's the row to update in Settings if you ever
+                need to change it there.
               </p>
               <Button
                 className="w-fit px-0 text-xs"
@@ -232,7 +238,20 @@ export function AgentCardMintDialog({
               disabled={saveKeyMutation.isPending}
               onExportInstead={onExportInstead}
             />
-            <div className="flex justify-end">
+            <div className="flex justify-end gap-2">
+              {editingKey && !needsKey ? (
+                <Button
+                  data-testid="agent-card-key-cancel"
+                  disabled={saveKeyMutation.isPending}
+                  onClick={() => {
+                    setKeyDraft("");
+                    setEditingKey(false);
+                  }}
+                  variant="outline"
+                >
+                  Cancel
+                </Button>
+              ) : null}
               <Button
                 data-testid="agent-card-key-save"
                 disabled={
@@ -323,6 +342,23 @@ export function AgentCardMintDialog({
                 disabled={!canLock}
                 onCheckedChange={setLockCard}
               />
+            </div>
+            <div
+              className="flex items-center gap-1 text-xs text-muted-foreground"
+              data-testid="agent-card-key-status"
+            >
+              <KeyRound className="h-3 w-3 shrink-0" />
+              <span>Using your saved OpenAI key</span>
+              <span aria-hidden>·</span>
+              <Button
+                className="h-auto p-0 text-xs"
+                data-testid="agent-card-update-key"
+                onClick={() => setEditingKey(true)}
+                size="sm"
+                variant="link"
+              >
+                Update
+              </Button>
             </div>
             <p
               className="text-xs text-muted-foreground"

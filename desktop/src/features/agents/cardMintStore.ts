@@ -123,6 +123,14 @@ export async function runCardMintJob(
       // removed between dialog-open and mint. The dialog's key-setup panel is
       // long gone — surface a plain instruction instead of the wire prefix.
       message = message.slice(NO_OPENAI_KEY_PREFIX.length).trim();
+    } else if (
+      message.includes("401") ||
+      message.includes("Incorrect API key")
+    ) {
+      // The saved key is invalid (e.g. expired or rotated). Point the user at
+      // the update affordance rather than exposing the raw API error.
+      message =
+        'The OpenAI API key is invalid or expired. Open the mint dialog and use "Update API key" to replace it.';
     }
     updateJob(jobId, { phase: "error", error: message });
     toast.error(`Minting ${input.agentName}'s card failed`, {
