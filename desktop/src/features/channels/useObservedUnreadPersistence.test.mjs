@@ -534,7 +534,7 @@ test("marker prune: thread and channel markers prune covered events; sibling cha
   );
   // Sibling: channel-b unaffected.
   assert.ok(eventsRef.current.has("channel-b"), "channel-b must survive");
-  assert.ok(pruneCount >= 1, "onPruned must fire at least once");
+  assert.equal(pruneCount, 1, "onPruned must fire exactly once");
 
   await harness.unmount();
 });
