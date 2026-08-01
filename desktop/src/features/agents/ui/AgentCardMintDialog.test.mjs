@@ -1,117 +1,152 @@
 import assert from "node:assert/strict";
-import { describe, it, beforeEach } from "node:test";
+import { describe, it } from "node:test";
 
-// ── Why these tests live at the store boundary ─────────────────────────────
-// AgentCardMintDialog holds a single new boolean state (`editingKey`) that
-// gates whether the key-setup panel is visible even after a key already
-// resolves. Mounting the full component requires Tauri IPC, a QueryClient
-// provider, and a real DOM — none of which are available in the node:test
-// runner. Rather than a fragile DOM shim, these tests pin the *logic* that
-// the component depends on:
-//
-//   1. The panel-visibility predicate (needsKey || editingKey) through both
-//      toggle transitions.
-//   2. The cancel path: editingKey resets to false when cancelled.
-//   3. The save path: editingKey resets to false on success (verified via the
-//      store's onSuccess handler logic, exercised in cardMintStore.test.mjs).
-//
-// If the predicate ever changes (e.g. triple condition), this file catches it.
+// Tests for the key-panel visibility derivations that AgentCardMintDialog
+// imports from cardMintKeyUtils. These tests exercise the exact production
+// module — changes to any exported function will cause failures here.
 
-/** Pure model of the key-panel show condition — mirrors the component render. */
-function showKeyPanel(needsKey, editingKey) {
-  return needsKey || editingKey;
-}
+import {
+  isReadOnlyLayer,
+  isWritableLayer,
+  showCancelButton,
+  showKeyPanel,
+  showKeyStatusRow,
+} from "./cardMintKeyUtils.ts";
 
-/** Pure model of the cancel-button visibility — mirrors the component render. */
-function showCancelButton(needsKey, editingKey) {
-  return editingKey && !needsKey;
-}
+describe("cardMintKeyUtils — key panel derivations", () => {
+  // ── isWritableLayer ────────────────────────────────────────────────────────
 
-/** Pure model of the panel header title — mirrors the component render. */
-function keyPanelTitle(needsKey) {
-  return needsKey ? "One-time setup: OpenAI API key" : "Update OpenAI API key";
-}
-
-/** Pure model of the key-status row visibility (mint form, not key panel). */
-function showKeyStatusRow(needsKey, editingKey) {
-  return !needsKey && !editingKey;
-}
-
-describe("AgentCardMintDialog — editingKey toggle logic", () => {
-  // ── showKeyPanel ──────────────────────────────────────────────────────────
-
-  it("showKeyPanel_noKeyAndNotEditing_shows_setup_panel", () => {
-    // First-time user: key not yet saved
-    assert.equal(showKeyPanel(true, false), true);
+  it("isWritableLayer_none_true", () => {
+    assert.equal(isWritableLayer("none"), true);
   });
 
-  it("showKeyPanel_keyExistsAndNotEditing_hides_panel", () => {
-    // Normal state after first save: show the mint form
-    assert.equal(showKeyPanel(false, false), false);
+  it("isWritableLayer_global_true", () => {
+    assert.equal(isWritableLayer("global"), true);
   });
 
-  it("showKeyPanel_keyExistsAndEditingKey_shows_panel", () => {
-    // User clicked "Update API key": panel must reappear
-    assert.equal(showKeyPanel(false, true), true);
+  it("isWritableLayer_agent_false", () => {
+    assert.equal(isWritableLayer("agent"), false);
   });
 
-  it("showKeyPanel_noKeyAndEditingKey_shows_panel", () => {
-    // Degenerate: both true still shows the panel
-    assert.equal(showKeyPanel(true, true), true);
+  it("isWritableLayer_persona_false", () => {
+    assert.equal(isWritableLayer("persona"), false);
+  });
+
+  it("isWritableLayer_process_false", () => {
+    assert.equal(isWritableLayer("process"), false);
+  });
+
+  it("isWritableLayer_undefined_false", () => {
+    // Unknown (pending/error) — don't offer a write path
+    assert.equal(isWritableLayer(undefined), false);
+  });
+
+  // ── isReadOnlyLayer ────────────────────────────────────────────────────────
+
+  it("isReadOnlyLayer_agent_true", () => {
+    assert.equal(isReadOnlyLayer("agent"), true);
+  });
+
+  it("isReadOnlyLayer_persona_true", () => {
+    assert.equal(isReadOnlyLayer("persona"), true);
+  });
+
+  it("isReadOnlyLayer_process_true", () => {
+    assert.equal(isReadOnlyLayer("process"), true);
+  });
+
+  it("isReadOnlyLayer_global_false", () => {
+    assert.equal(isReadOnlyLayer("global"), false);
+  });
+
+  it("isReadOnlyLayer_none_false", () => {
+    assert.equal(isReadOnlyLayer("none"), false);
+  });
+
+  it("isReadOnlyLayer_undefined_false", () => {
+    assert.equal(isReadOnlyLayer(undefined), false);
+  });
+
+  // ── showKeyPanel ───────────────────────────────────────────────────────────
+
+  it("showKeyPanel_none_notEditing_shows", () => {
+    // First-time user: key not set → show setup panel
+    assert.equal(showKeyPanel("none", false), true);
+  });
+
+  it("showKeyPanel_global_notEditing_hides", () => {
+    // Normal state: key in global defaults, not editing → show mint form
+    assert.equal(showKeyPanel("global", false), false);
+  });
+
+  it("showKeyPanel_global_editing_shows", () => {
+    // User clicked Update → show the update panel
+    assert.equal(showKeyPanel("global", true), true);
+  });
+
+  it("showKeyPanel_agent_notEditing_shows", () => {
+    // Read-only layer: always show the read-only redirect panel
+    assert.equal(showKeyPanel("agent", false), true);
+  });
+
+  it("showKeyPanel_persona_notEditing_shows", () => {
+    assert.equal(showKeyPanel("persona", false), true);
+  });
+
+  it("showKeyPanel_process_notEditing_shows", () => {
+    assert.equal(showKeyPanel("process", false), true);
+  });
+
+  it("showKeyPanel_undefined_notEditing_hides", () => {
+    // Query pending/error → show mint form (fail-open, no panel claim)
+    assert.equal(showKeyPanel(undefined, false), false);
   });
 
   // ── showCancelButton ───────────────────────────────────────────────────────
 
-  it("showCancelButton_editingAndKeyExists_shows_cancel", () => {
-    // Cancel is only needed when the user opted in to update an existing key
-    assert.equal(showCancelButton(false, true), true);
+  it("showCancelButton_global_editing_shows", () => {
+    // Update mode for a global key: Cancel returns to the mint form
+    assert.equal(showCancelButton("global", true), true);
   });
 
-  it("showCancelButton_firstTimeSetup_hides_cancel", () => {
-    // First-time setup has nowhere to cancel back to
-    assert.equal(showCancelButton(true, false), false);
+  it("showCancelButton_none_editing_hides", () => {
+    // First-time setup: no cancel (no mint form to return to)
+    assert.equal(showCancelButton("none", true), false);
   });
 
-  it("showCancelButton_afterCancel_hides_cancel", () => {
-    // After cancel resets editingKey = false
-    assert.equal(showCancelButton(false, false), false);
+  it("showCancelButton_global_notEditing_hides", () => {
+    assert.equal(showCancelButton("global", false), false);
   });
 
-  it("showCancelButton_bothTrue_hides_cancel", () => {
-    // If key is missing AND editingKey is true, suppress cancel
-    // (no mint form to return to)
-    assert.equal(showCancelButton(true, true), false);
-  });
-
-  // ── keyPanelTitle ─────────────────────────────────────────────────────────
-
-  it("keyPanelTitle_noKey_shows_one_time_setup", () => {
-    assert.equal(keyPanelTitle(true), "One-time setup: OpenAI API key");
-  });
-
-  it("keyPanelTitle_keyExists_shows_update_label", () => {
-    assert.equal(keyPanelTitle(false), "Update OpenAI API key");
+  it("showCancelButton_agent_editing_hides", () => {
+    // Read-only layer: no Cancel (user didn't enter update mode voluntarily)
+    assert.equal(showCancelButton("agent", true), false);
   });
 
   // ── showKeyStatusRow ───────────────────────────────────────────────────────
 
-  it("showKeyStatusRow_keyExistsAndNotEditing_shows_status", () => {
-    // Normal state: key saved, not editing — show "Using your saved OpenAI key · Update"
-    assert.equal(showKeyStatusRow(false, false), true);
+  it("showKeyStatusRow_global_notEditing_shows", () => {
+    // Confirmed writable key: show "Using your saved OpenAI key · Update"
+    assert.equal(showKeyStatusRow("global", false), true);
   });
 
-  it("showKeyStatusRow_noKey_hides_status", () => {
-    // First-time user: no key yet, show the key panel instead
-    assert.equal(showKeyStatusRow(true, false), false);
+  it("showKeyStatusRow_global_editing_hides", () => {
+    // In update panel: status row is redundant while editing
+    assert.equal(showKeyStatusRow("global", true), false);
   });
 
-  it("showKeyStatusRow_editingKey_hides_status", () => {
-    // User opened the update panel — status row is redundant while editing
-    assert.equal(showKeyStatusRow(false, true), false);
+  it("showKeyStatusRow_none_notEditing_hides", () => {
+    // No key: show setup panel, not status row
+    assert.equal(showKeyStatusRow("none", false), false);
   });
 
-  it("showKeyStatusRow_bothTrue_hides_status", () => {
-    // Degenerate: panel is shown, status row should not be
-    assert.equal(showKeyStatusRow(true, true), false);
+  it("showKeyStatusRow_agent_notEditing_hides", () => {
+    // Read-only layer: panel is shown, not the status row
+    assert.equal(showKeyStatusRow("agent", false), false);
+  });
+
+  it("showKeyStatusRow_undefined_notEditing_hides", () => {
+    // Query pending/error: do not assert key existence
+    assert.equal(showKeyStatusRow(undefined, false), false);
   });
 });

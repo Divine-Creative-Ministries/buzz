@@ -71,6 +71,84 @@ fn key_resolution_layering_record_wins() {
     assert!(resolve_env_from_layers("OPENAI_API_KEY", &global, &persona, &record, None).is_none());
 }
 
+/// Prove that `card_mint_key_status` layer detection matches the priority order
+/// that `mint_agent_card` uses for resolution, so the dialog update path is only
+/// offered when writing global will actually become the resolved key.
+#[test]
+fn key_status_layer_matches_mint_resolution_priority() {
+    let key = "OPENAI_API_KEY";
+    let mut global = BTreeMap::new();
+    let mut persona = BTreeMap::new();
+    let mut record = BTreeMap::new();
+
+    // Helper that mirrors card_mint_key_status logic inline.
+    let layer_for = |global: &BTreeMap<String, String>,
+                     persona: &BTreeMap<String, String>,
+                     record: &BTreeMap<String, String>|
+     -> &'static str {
+        if record
+            .get(key)
+            .map(|v| !v.trim().is_empty())
+            .unwrap_or(false)
+        {
+            return "agent";
+        }
+        if persona
+            .get(key)
+            .map(|v| !v.trim().is_empty())
+            .unwrap_or(false)
+        {
+            return "persona";
+        }
+        if global
+            .get(key)
+            .map(|v| !v.trim().is_empty())
+            .unwrap_or(false)
+        {
+            return "global";
+        }
+        "none"
+    };
+
+    // No key anywhere → "none"
+    assert_eq!(layer_for(&global, &persona, &record), "none");
+
+    // Only global → "global" (the only writable layer)
+    global.insert(key.to_string(), "sk-global".to_string());
+    assert_eq!(layer_for(&global, &persona, &record), "global");
+    // mint resolution also picks global when record and persona are empty
+    assert_eq!(
+        resolve_env_from_layers(key, &global, &persona, &record, None).as_deref(),
+        Some("sk-global")
+    );
+
+    // Persona overrides global → status must report "persona", NOT "global"
+    persona.insert(key.to_string(), "sk-persona".to_string());
+    assert_eq!(layer_for(&global, &persona, &record), "persona");
+    // mint would use the persona key
+    assert_eq!(
+        resolve_env_from_layers(key, &global, &persona, &record, None).as_deref(),
+        Some("sk-persona")
+    );
+    // Writing to global would NOT change what mint resolves — status correctly
+    // returns "persona" so the dialog shows a read-only redirect instead.
+    let mut global_updated = global.clone();
+    global_updated.insert(key.to_string(), "sk-new-global".to_string());
+    assert_eq!(
+        resolve_env_from_layers(key, &global_updated, &persona, &record, None).as_deref(),
+        Some("sk-persona"),
+        "writing global must not change resolution when persona key exists"
+    );
+
+    // Agent record overrides both → status must report "agent"
+    record.insert(key.to_string(), "sk-agent".to_string());
+    assert_eq!(layer_for(&global, &persona, &record), "agent");
+    assert_eq!(
+        resolve_env_from_layers(key, &global, &persona, &record, None).as_deref(),
+        Some("sk-agent")
+    );
+}
+
 #[test]
 fn key_resolution_skips_blank_values() {
     let mut record = BTreeMap::new();

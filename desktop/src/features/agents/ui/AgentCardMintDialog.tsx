@@ -20,6 +20,7 @@ import { globalAgentConfigQueryKey } from "@/features/agents/useGlobalAgentConfi
 import {
   cardMintKeyStatus,
   cardMintSaveOpenaiKey,
+  type CardMintKeyLayer,
   type SnapshotMemoryLevel,
 } from "@/shared/api/tauriPersonas";
 import { Button } from "@/shared/ui/button";
@@ -34,6 +35,12 @@ import { Input } from "@/shared/ui/input";
 import { Switch } from "@/shared/ui/switch";
 import { Textarea } from "@/shared/ui/textarea";
 import { SnapshotOptionMenu } from "./SnapshotOptionMenu";
+import {
+  isReadOnlyLayer,
+  isWritableLayer,
+  showKeyPanel,
+  showKeyStatusRow,
+} from "./cardMintKeyUtils";
 
 const OPENAI_KEYS_URL = "https://platform.openai.com/api-keys";
 
@@ -131,14 +138,20 @@ export function AgentCardMintDialog({
   // (owner, agent) pair, so the plaintext warning would be false there.
   const showMemoryWarning = memoryLevel !== "none" && !effectiveLock;
 
-  // Whether a key already resolves through the agent's env layering. While
-  // unknown (loading/error) we show the normal mint form — the mint itself
-  // still fails cleanly if no key exists.
+  // Whether a key already resolves through the agent's env layering, and from
+  // which layer. While unknown (loading/error) we treat as if no verified key
+  // exists — mint still works fail-open, but we don't assert a key is present.
   const keyStatusQuery = useQuery({
     queryKey: ["cardMintKeyStatus", agentId],
     queryFn: () => cardMintKeyStatus(agentId),
   });
-  const needsKey = keyStatusQuery.data === false;
+  const keyLayer: CardMintKeyLayer | undefined = keyStatusQuery.data;
+  // True when we have confirmed no key resolves anywhere.
+  const needsKey = keyLayer === "none";
+  // True when the key is writable from this dialog (global default or unset).
+  const keyIsWritable = isWritableLayer(keyLayer);
+  // True when the key resolves from a layer this dialog cannot update.
+  const keyIsReadOnly = isReadOnlyLayer(keyLayer);
 
   // Save the pasted key into the global Agent Defaults env — the same single
   // source of truth every agent inherits. Narrow Rust seam: validated
@@ -147,7 +160,12 @@ export function AgentCardMintDialog({
   const saveKeyMutation = useMutation({
     mutationFn: (key: string) => cardMintSaveOpenaiKey(key),
     onSuccess: () => {
-      queryClient.setQueryData(["cardMintKeyStatus", agentId], true);
+      // The key now lives in global defaults — update the cached layer so the
+      // status row shows correctly without waiting for a refetch.
+      queryClient.setQueryData<CardMintKeyLayer>(
+        ["cardMintKeyStatus", agentId],
+        "global",
+      );
       // The Agent Defaults editor caches the whole config — refetch it so a
       // later-opened settings view shows the key we just wrote.
       void queryClient.invalidateQueries({
@@ -190,7 +208,7 @@ export function AgentCardMintDialog({
           </DialogDescription>
         </DialogHeader>
 
-        {needsKey || editingKey ? (
+        {showKeyPanel(keyLayer, editingKey) ? (
           <div
             className="flex flex-col gap-4"
             data-testid="agent-card-key-setup"
@@ -198,48 +216,68 @@ export function AgentCardMintDialog({
             <div className="flex flex-col gap-2 rounded-md border border-border p-3">
               <span className="flex items-center gap-1.5 text-sm font-medium">
                 <KeyRound className="h-3.5 w-3.5" />
-                {needsKey
-                  ? "One-time setup: OpenAI API key"
-                  : "Update OpenAI API key"}
+                {needsKey || editingKey
+                  ? needsKey
+                    ? "One-time setup: OpenAI API key"
+                    : "Update OpenAI API key"
+                  : "OpenAI API key"}
               </span>
-              <p className="text-xs text-muted-foreground">
-                Minting a card costs money — it generates the art and card text
-                through the OpenAI API with your key (typically well under a
-                dollar per mint, billed by OpenAI). The key is saved as{" "}
-                <code className="font-mono">OPENAI_API_KEY</code> in your agent
-                defaults env — that's the row to update in Settings if you ever
-                need to change it there.
-              </p>
-              <Button
-                className="w-fit px-0 text-xs"
-                data-testid="agent-card-key-link"
-                onClick={() =>
-                  void openUrl(OPENAI_KEYS_URL).catch(() => {
-                    toast.error("Failed to open link");
-                  })
-                }
-                size="sm"
-                variant="link"
-              >
-                <ExternalLink className="mr-1 h-3 w-3" />
-                Get a key at platform.openai.com
-              </Button>
-              <Input
-                autoFocus
-                data-testid="agent-card-key-input"
-                disabled={saveKeyMutation.isPending}
-                onChange={(e) => setKeyDraft(e.target.value)}
-                placeholder="sk-…"
-                type="password"
-                value={keyDraft}
-              />
+              {keyIsReadOnly ? (
+                // Key resolves from a layer the dialog cannot write to — show
+                // a read-only redirect instead of an input that would be
+                // shadowed by the higher-priority layer.
+                <p
+                  className="text-xs text-muted-foreground"
+                  data-testid="agent-card-key-readonly"
+                >
+                  {keyLayer === "agent"
+                    ? "This agent's OpenAI key is set in its own agent settings — update it there."
+                    : keyLayer === "persona"
+                      ? "This agent's OpenAI key comes from its linked persona settings — update it there."
+                      : "This agent's OpenAI key is set in the process environment — update it in your shell or launch config."}
+                </p>
+              ) : (
+                <>
+                  <p className="text-xs text-muted-foreground">
+                    Minting a card costs money — it generates the art and card
+                    text through the OpenAI API with your key (typically well
+                    under a dollar per mint, billed by OpenAI). The key is saved
+                    as <code className="font-mono">OPENAI_API_KEY</code> in your
+                    agent defaults env — that's the row to update in Settings if
+                    you ever need to change it there.
+                  </p>
+                  <Button
+                    className="w-fit px-0 text-xs"
+                    data-testid="agent-card-key-link"
+                    onClick={() =>
+                      void openUrl(OPENAI_KEYS_URL).catch(() => {
+                        toast.error("Failed to open link");
+                      })
+                    }
+                    size="sm"
+                    variant="link"
+                  >
+                    <ExternalLink className="mr-1 h-3 w-3" />
+                    Get a key at platform.openai.com
+                  </Button>
+                  <Input
+                    autoFocus
+                    data-testid="agent-card-key-input"
+                    disabled={saveKeyMutation.isPending}
+                    onChange={(e) => setKeyDraft(e.target.value)}
+                    placeholder="sk-…"
+                    type="password"
+                    value={keyDraft}
+                  />
+                </>
+              )}
             </div>
             <FreeSharePathRow
               disabled={saveKeyMutation.isPending}
               onExportInstead={onExportInstead}
             />
             <div className="flex justify-end gap-2">
-              {editingKey && !needsKey ? (
+              {editingKey && keyIsWritable ? (
                 <Button
                   data-testid="agent-card-key-cancel"
                   disabled={saveKeyMutation.isPending}
@@ -252,16 +290,20 @@ export function AgentCardMintDialog({
                   Cancel
                 </Button>
               ) : null}
-              <Button
-                data-testid="agent-card-key-save"
-                disabled={
-                  saveKeyMutation.isPending || keyDraft.trim().length === 0
-                }
-                onClick={() => saveKeyMutation.mutate(keyDraft.trim())}
-              >
-                <KeyRound className="mr-2 h-4 w-4" />
-                {saveKeyMutation.isPending ? "Saving…" : "Save key & continue"}
-              </Button>
+              {!keyIsReadOnly ? (
+                <Button
+                  data-testid="agent-card-key-save"
+                  disabled={
+                    saveKeyMutation.isPending || keyDraft.trim().length === 0
+                  }
+                  onClick={() => saveKeyMutation.mutate(keyDraft.trim())}
+                >
+                  <KeyRound className="mr-2 h-4 w-4" />
+                  {saveKeyMutation.isPending
+                    ? "Saving…"
+                    : "Save key & continue"}
+                </Button>
+              ) : null}
             </div>
           </div>
         ) : (
@@ -343,23 +385,25 @@ export function AgentCardMintDialog({
                 onCheckedChange={setLockCard}
               />
             </div>
-            <div
-              className="flex items-center gap-1 text-xs text-muted-foreground"
-              data-testid="agent-card-key-status"
-            >
-              <KeyRound className="h-3 w-3 shrink-0" />
-              <span>Using your saved OpenAI key</span>
-              <span aria-hidden>·</span>
-              <Button
-                className="h-auto p-0 text-xs"
-                data-testid="agent-card-update-key"
-                onClick={() => setEditingKey(true)}
-                size="sm"
-                variant="link"
+            {showKeyStatusRow(keyLayer, editingKey) ? (
+              <div
+                className="flex items-center gap-1 text-xs text-muted-foreground"
+                data-testid="agent-card-key-status"
               >
-                Update
-              </Button>
-            </div>
+                <KeyRound className="h-3 w-3 shrink-0" />
+                <span>Using your saved OpenAI key</span>
+                <span aria-hidden>·</span>
+                <Button
+                  className="h-auto p-0 text-xs"
+                  data-testid="agent-card-update-key"
+                  onClick={() => setEditingKey(true)}
+                  size="sm"
+                  variant="link"
+                >
+                  Update
+                </Button>
+              </div>
+            ) : null}
             <p
               className="text-xs text-muted-foreground"
               data-testid="agent-card-cost-note"

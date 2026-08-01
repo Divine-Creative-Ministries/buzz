@@ -124,11 +124,12 @@ export async function runCardMintJob(
       // long gone — surface a plain instruction instead of the wire prefix.
       message = message.slice(NO_OPENAI_KEY_PREFIX.length).trim();
     } else if (
-      message.includes("401") ||
+      message.startsWith("Card mint failed (HTTP 401 ") ||
       message.includes("Incorrect API key")
     ) {
-      // The saved key is invalid (e.g. expired or rotated). Point the user at
-      // the update affordance rather than exposing the raw API error.
+      // The saved OpenAI key is invalid or expired. Only match the OpenAI-call
+      // envelope prefix and the specific Incorrect-API-key message to avoid
+      // rewriting unrelated 401s (e.g. "Avatar fetch failed: HTTP 401 …").
       message =
         'The OpenAI API key is invalid or expired. Open the mint dialog and use "Update API key" to replace it.';
     }

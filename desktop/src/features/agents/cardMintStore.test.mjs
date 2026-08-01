@@ -133,6 +133,18 @@ describe("cardMintStore", () => {
     assert.equal(getCardMintJobs()[0].error, "Connection timeout");
   });
 
+  it("does not rewrite avatar fetch 401 as an API key error", async () => {
+    // Avatar fetch failures have a different error prefix — rewriting them
+    // would send the user down a path that cannot fix the avatar failure.
+    const avatarError = "Avatar fetch failed: HTTP 401 Unauthorized";
+    await runCardMintJob(INPUT, () => Promise.reject(new Error(avatarError)));
+    assert.equal(
+      getCardMintJobs()[0].error,
+      avatarError,
+      "avatar 401 must pass through unchanged",
+    );
+  });
+
   it("viewMintedCardJob moves a done job into the viewer and clears the chip", async () => {
     await runCardMintJob(INPUT, () => Promise.resolve(CARD));
     const jobId = getCardMintJobs()[0].jobId;
