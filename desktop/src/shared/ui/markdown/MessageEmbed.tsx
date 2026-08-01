@@ -44,7 +44,7 @@ export function MessageEmbed({
   if (!canRead || eventQuery.isError || (eventQuery.data && !event)) {
     return (
       <div
-        className="flex min-h-24 w-96 max-w-full items-center gap-3 border-l-2 border-border px-4 py-3 text-muted-foreground"
+        className="flex w-96 max-w-full items-center gap-3 border-l-[3px] border-border py-1 pl-3 text-muted-foreground/70"
         data-message-embed="unavailable"
       >
         <LockKeyhole aria-hidden="true" className="h-4 w-4 shrink-0" />
@@ -58,13 +58,13 @@ export function MessageEmbed({
   if (!event) {
     return (
       <div
-        className="min-h-24 w-96 max-w-full animate-pulse border-l-2 border-border px-4 py-3"
+        className="w-96 max-w-full animate-pulse border-l-[3px] border-border py-1 pl-3"
         data-message-embed="loading"
       >
         <span className="sr-only">Loading message preview</span>
-        <div className="mb-3 h-5 w-36 rounded bg-muted" />
+        <div className="mb-1 h-4 w-36 rounded bg-muted" />
         <div className="h-4 w-full rounded bg-muted" />
-        <div className="mt-2 h-4 w-2/3 rounded bg-muted" />
+        <div className="mt-1 h-4 w-2/3 rounded bg-muted" />
       </div>
     );
   }
@@ -77,11 +77,11 @@ export function MessageEmbed({
     <button
       type="button"
       aria-label={`Open message by ${displayName} in ${channel?.name ?? "channel"}`}
-      className="group w-96 max-w-full cursor-pointer border-l-2 border-primary px-4 py-3 text-left transition-colors hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      className="group w-96 max-w-full cursor-pointer border-l-[3px] border-border py-1 pl-3 text-left transition-colors hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
       data-message-embed="resolved"
       onClick={onOpen}
     >
-      <span className="mb-2 flex min-w-0 items-center gap-2">
+      <span className="mb-0.5 flex min-w-0 items-center gap-2">
         <UserAvatar
           avatarUrl={profile?.avatarUrl ?? null}
           className="shrink-0"
