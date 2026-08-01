@@ -76,6 +76,60 @@ If upstream later implements the same general feature as the fork, remove the
 downstream duplicate in a separate reviewed change after verifying that the
 upstream behavior fully replaces it.
 
+## Customized iOS App Distribution
+
+The preferred and required production distribution method for Divine
+Creative's customized Buzz iOS app is an Apple **Private Custom App**:
+
+1. Maintain the app under Divine Creative's active Apple Developer Program
+   organization account.
+2. Create the app record in App Store Connect with **Private** distribution
+   selected from the outset.
+3. Restrict availability to Divine Creative's verified Apple Business
+   organization ID.
+4. Submit the app and every production update to Apple App Review.
+5. Assign the approved app privately through Apple Business, preferably using
+   managed app assignment through the organization's MDM when device management
+   is available.
+
+This uses Apple's App Store distribution infrastructure without listing the
+app publicly. Production releases do not have TestFlight's 90-day build
+expiration, and installed App Store-distributed apps are not tied to an Ad Hoc
+or development provisioning profile that must be periodically replaced.
+
+Keep the Apple Developer membership, Apple Business organization, bundle ID,
+signing access, and App Store Connect ownership active and documented. This is
+a durable deployment method, not a promise that a build will remain compatible
+with every future iOS release or continue to be downloadable after accounts or
+agreements lapse.
+
+The following methods have narrower purposes and are not the production path:
+
+- **TestFlight:** temporary internal or external beta testing only; each build
+  expires after 90 days.
+- **Development or Ad Hoc signing:** device-limited testing only; these methods
+  depend on registered devices and provisioning profiles.
+- **Apple Developer Enterprise Program:** not the default; it is restricted to
+  qualifying organizations and its in-house distribution still requires
+  certificate, profile, and membership lifecycle management.
+- **Unlisted App Store distribution:** not private because anyone with the link
+  can potentially access it.
+- **Public App Store distribution:** requires a separate documented decision.
+  Apple does not allow an approved app record to switch freely between private
+  and public distribution.
+
+Agents preparing an iOS release must verify the target is the Private Custom
+App record and the Divine Creative Apple Business organization before upload.
+Do not create a replacement public or unlisted record, change the bundle ID, or
+rotate signing ownership without explicit approval and a migration plan.
+
+Official references:
+
+- [Set distribution methods](https://developer.apple.com/help/app-store-connect/manage-your-apps-availability/set-distribution-methods)
+- [Learn about Custom Apps in Apple Business](https://support.apple.com/guide/business/learn-about-custom-apps-axm58ba3112a/web)
+- [TestFlight overview](https://developer.apple.com/help/app-store-connect/test-a-beta-version/testflight-overview)
+- [Apple Developer Program renewal](https://developer.apple.com/help/account/membership/renewal)
+
 ## Deployment Rules
 
 A merged pull request is not permission to deploy. Deployment must be requested
