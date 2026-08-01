@@ -36,6 +36,12 @@ releasing, or deploying, read
   on the VPS. Build from a reviewed commit, deploy an immutable image, record
   its source SHA and digest, back up state first, and retain a tested rollback
   path.
+- Distribute the customized production iOS app as a **Private Custom App** in
+  App Store Connect, restricted to the Divine Creative organization in Apple
+  Business and delivered through Apple Business or MDM. TestFlight is for
+  temporary testing only; development, Ad Hoc, Enterprise, unlisted, and public
+  App Store distribution are not production substitutes unless an explicit,
+  documented exception is approved. See the iOS policy in the fork workflow.
 - Never commit credentials, `.env` contents, private keys, backup archives, or
   production data. Deployment is a separate, explicitly authorized action; a
   code change or merged pull request does not authorize it.
