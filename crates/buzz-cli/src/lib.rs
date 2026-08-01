@@ -1230,6 +1230,24 @@ pub enum RepoPushRole {
     Member,
 }
 
+/// Visibility of a multi-repo project listing.
+#[derive(Clone, Copy, Debug, clap::ValueEnum)]
+pub enum ProjectVisibility {
+    /// Project appears in public listings (default).
+    Listed,
+    /// Project is hidden from public listings.
+    Unlisted,
+}
+
+impl ProjectVisibility {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ProjectVisibility::Listed => "listed",
+            ProjectVisibility::Unlisted => "unlisted",
+        }
+    }
+}
+
 #[derive(Subcommand)]
 pub enum ProjectsCmd {
     /// Create a new multi-repo project (NIP-MP kind:30621)
@@ -1252,9 +1270,9 @@ pub enum ProjectsCmd {
         /// Associated Buzz channel UUID
         #[arg(long)]
         channel: Option<String>,
-        /// Visibility token: `listed` (default) or `unlisted`
+        /// Visibility: `listed` (default) or `unlisted`
         #[arg(long)]
-        visibility: Option<String>,
+        visibility: Option<ProjectVisibility>,
     },
     /// Get a project by slug
     Get {
@@ -1316,7 +1334,7 @@ pub enum ProjectsCmd {
         clear_channel: bool,
         /// Set visibility: `listed` or `unlisted`
         #[arg(long, group = "mutation")]
-        visibility: Option<String>,
+        visibility: Option<ProjectVisibility>,
         /// Remove the visibility tag (absence defaults to `listed`)
         #[arg(long, group = "mutation", conflicts_with = "visibility")]
         clear_visibility: bool,
@@ -2327,6 +2345,42 @@ mod tests {
         assert!(
             Cli::try_parse_from(["buzz", "projects", "update", "my-slug"]).is_err(),
             "update with no setters or clearers must be rejected at parse time"
+        );
+    }
+
+    /// An unrecognised visibility token must be rejected by clap before any I/O.
+    #[test]
+    fn projects_create_invalid_visibility_is_rejected_by_clap() {
+        assert!(
+            Cli::try_parse_from([
+                "buzz",
+                "projects",
+                "create",
+                "my-slug",
+                "--repo",
+                "buzz",
+                "--visibility",
+                "chartreuse",
+            ])
+            .is_err(),
+            "--visibility chartreuse must be rejected at parse time"
+        );
+    }
+
+    /// An unrecognised visibility token on update must be rejected by clap before any I/O.
+    #[test]
+    fn projects_update_invalid_visibility_is_rejected_by_clap() {
+        assert!(
+            Cli::try_parse_from([
+                "buzz",
+                "projects",
+                "update",
+                "my-slug",
+                "--visibility",
+                "chartreuse",
+            ])
+            .is_err(),
+            "--visibility chartreuse on update must be rejected at parse time"
         );
     }
 }

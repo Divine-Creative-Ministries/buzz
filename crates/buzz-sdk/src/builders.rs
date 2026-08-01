@@ -1928,25 +1928,6 @@ impl ProjectMemberCoord {
         })
     }
 
-    /// Parse a full coordinate string that may carry a relay hint as a third
-    /// colon-separated field, i.e. a raw `a`-tag second element value.
-    ///
-    /// The relay hint (if present) is retained opaquely and never validated
-    /// by content; it must be separated from the coordinate by splitting only
-    /// up to three segments (kind:owner:repo-d — the repo-d may contain colons).
-    ///
-    /// This is used when re-parsing `a` tags from an existing event.
-    pub fn from_tag_value(coord_with_possible_hint: &str) -> Result<Self, SdkError> {
-        // The a-tag value is the plain coord; hint is a separate tag element.
-        Self::parse_full(coord_with_possible_hint)
-    }
-
-    /// Attach an optional relay hint to this coordinate.
-    pub fn with_hint(mut self, hint: Option<String>) -> Self {
-        self.hint = hint;
-        self
-    }
-
     /// Returns the `a`-tag element slice: `[coord]` or `[coord, hint]`.
     pub fn to_tag_parts(&self) -> Vec<String> {
         let mut parts = vec!["a".to_string(), self.coord.clone()];
@@ -4297,9 +4278,157 @@ mod tests {
         );
     }
 
+    // ── Layer B writer-policy builder ───────────────────────────────────────
+
+    const OWNER64: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const VALID_UUID: &str = "3580ca9b-47b4-4af9-b22a-1068778f26c6";
+
+    fn member_coord(repo: &str) -> ProjectMemberCoord {
+        ProjectMemberCoord::parse_full(&format!("30617:{OWNER64}:{repo}")).unwrap()
+    }
+
+    #[test]
+    fn build_project_emitted_envelope_has_correct_shape() {
+        // slug, name, description, channel, visibility, and one member.
+        let m = member_coord("buzz");
+        let ev = sign(
+            build_project(
+                "my-proj",
+                Some("My Project"),
+                Some("A description"),
+                &[m],
+                Some(VALID_UUID),
+                Some("listed"),
+            )
+            .expect("Layer B must accept valid inputs"),
+        );
+
+        // Kind must be 30621.
+        assert_eq!(ev.kind.as_u16(), KIND_PROJECT as u16);
+        // Content must be empty (Layer B policy).
+        assert!(ev.content.is_empty(), "content must be empty");
+
+        let all_tags: Vec<Vec<String>> = ev.tags.iter().map(|t| t.as_slice().to_vec()).collect();
+
+        // d tag must be present exactly once.
+        let d_tags: Vec<_> = all_tags.iter().filter(|t| t[0] == "d").collect();
+        assert_eq!(d_tags.len(), 1);
+        assert_eq!(d_tags[0][1], "my-proj");
+
+        // name, description, buzz-channel, buzz-visibility present.
+        let name_tags: Vec<_> = all_tags.iter().filter(|t| t[0] == "name").collect();
+        assert_eq!(name_tags.len(), 1);
+        assert_eq!(name_tags[0][1], "My Project");
+
+        let desc_tags: Vec<_> = all_tags.iter().filter(|t| t[0] == "description").collect();
+        assert_eq!(desc_tags.len(), 1);
+        assert_eq!(desc_tags[0][1], "A description");
+
+        let ch_tags: Vec<_> = all_tags.iter().filter(|t| t[0] == "buzz-channel").collect();
+        assert_eq!(ch_tags.len(), 1);
+        assert_eq!(ch_tags[0][1], VALID_UUID);
+
+        let vis_tags: Vec<_> = all_tags
+            .iter()
+            .filter(|t| t[0] == "buzz-visibility")
+            .collect();
+        assert_eq!(vis_tags.len(), 1);
+        assert_eq!(vis_tags[0][1], "listed");
+
+        // member a tag.
+        let a_tags: Vec<_> = all_tags.iter().filter(|t| t[0] == "a").collect();
+        assert_eq!(a_tags.len(), 1);
+        assert_eq!(a_tags[0][1], format!("30617:{OWNER64}:buzz"));
+    }
+
+    #[test]
+    fn build_project_optional_fields_absent_when_not_supplied() {
+        let m = member_coord("core");
+        let ev = sign(
+            build_project("my-proj", None, None, &[m], None, None)
+                .expect("minimal build must succeed"),
+        );
+        let names: Vec<_> = ev
+            .tags
+            .iter()
+            .filter(|t| t.as_slice().first().map(|s| s.as_str()) == Some("name"))
+            .collect();
+        assert!(names.is_empty(), "name tag must not be emitted when absent");
+    }
+
+    #[test]
+    fn build_project_rejects_empty_slug() {
+        let m = member_coord("r");
+        let err = build_project("", None, None, &[m], None, None).unwrap_err();
+        assert!(
+            matches!(err, SdkError::InvalidInput(_)),
+            "empty slug must be InvalidInput, got: {err:?}"
+        );
+        assert!(err.to_string().contains("empty"));
+    }
+
+    #[test]
+    fn build_project_rejects_overlong_slug() {
+        let long_slug = "a".repeat(PROJECT_D_MAX_LEN + 1);
+        let m = member_coord("r");
+        let err = build_project(&long_slug, None, None, &[m], None, None).unwrap_err();
+        assert!(matches!(err, SdkError::InvalidInput(_)));
+    }
+
+    #[test]
+    fn build_project_rejects_invalid_channel_uuid() {
+        let m = member_coord("r");
+        let err = build_project("slug", None, None, &[m], Some("not-a-uuid"), None).unwrap_err();
+        assert!(matches!(err, SdkError::InvalidInput(_)));
+        assert!(err.to_string().contains("UUID") || err.to_string().contains("uuid"));
+    }
+
+    #[test]
+    fn build_project_rejects_invalid_visibility_token() {
+        let m = member_coord("r");
+        let err = build_project("slug", None, None, &[m], None, Some("chartreuse")).unwrap_err();
+        assert!(matches!(err, SdkError::InvalidInput(_)));
+        assert!(err.to_string().contains("listed") || err.to_string().contains("unlisted"));
+    }
+
+    #[test]
+    fn build_project_rejects_over_cap_members() {
+        let members: Vec<_> = (0..=PROJECT_MEMBER_CAP)
+            .map(|i| member_coord(&format!("repo-{i}")))
+            .collect();
+        let err = build_project("slug", None, None, &members, None, None).unwrap_err();
+        assert!(matches!(err, SdkError::InvalidInput(_)));
+        assert!(
+            err.to_string().contains("member-cap"),
+            "over-cap must report member-cap, got: {err}"
+        );
+    }
+
+    #[test]
+    fn build_project_rejects_duplicate_members() {
+        let m = member_coord("same");
+        let err = build_project("slug", None, None, &[m.clone(), m], None, None).unwrap_err();
+        assert!(matches!(err, SdkError::InvalidInput(_)));
+        assert!(
+            err.to_string().contains("dedup") || err.to_string().contains("duplicate"),
+            "duplicate member must report dedup, got: {err}"
+        );
+    }
+
+    #[test]
+    fn build_project_content_is_always_empty() {
+        // build_project forces content="" regardless; Layer A also enforces
+        // that the envelope is valid. Any non-empty content would be dropped.
+        // This test pins the Layer B content-forced-empty policy.
+        let m = member_coord("r");
+        let ev = sign(build_project("slug", None, None, &[m], None, None).unwrap());
+        assert!(
+            ev.content.is_empty(),
+            "Layer B must always emit empty content"
+        );
+    }
+
     // ── NIP-MP conformance fixtures ──────────────────────────────────────────
-    //
-    // All 31 cases from docs/nips/NIP-MP.fixtures.json run through
     // `build_project_with_tags` directly.  Accept cases must build; reject
     // cases must fail with an error message containing the expected rule name.
     // A count assertion guards against silent omissions.
