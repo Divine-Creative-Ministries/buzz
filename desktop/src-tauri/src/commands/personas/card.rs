@@ -283,6 +283,35 @@ pub(crate) fn resolve_env_from_layers(
     process_value.filter(|k| !k.trim().is_empty())
 }
 
+/// Pure classification: same four env inputs as `resolve_env_from_layers`,
+/// returns which layer supplies `OPENAI_API_KEY` (agent > persona > global >
+/// process > none).
+pub(crate) fn resolve_key_layer(
+    global_env: &std::collections::BTreeMap<String, String>,
+    persona_env: &std::collections::BTreeMap<String, String>,
+    record_env: &std::collections::BTreeMap<String, String>,
+    process_value: Option<String>,
+) -> &'static str {
+    let key = "OPENAI_API_KEY";
+    let nonempty = |m: &std::collections::BTreeMap<String, String>| {
+        m.get(key).is_some_and(|v| !v.trim().is_empty())
+    };
+    if nonempty(record_env) {
+        return "agent";
+    }
+    if nonempty(persona_env) {
+        return "persona";
+    }
+    if nonempty(global_env) {
+        return "global";
+    }
+    let proc = process_value.as_deref().unwrap_or("");
+    if !proc.trim().is_empty() {
+        return "process";
+    }
+    "none"
+}
+
 /// The Responses endpoint to post mints to. `OPENAI_BASE_URL` (same env
 /// layering as the key) overrides the default host, supporting endpoints and
 /// proxies that speak the OpenAI Responses shape with Bearer auth. Azure
@@ -450,14 +479,9 @@ pub fn card_mint_save_openai_key(
     save_global_agent_config(&app, &config)
 }
 
-/// Report which env layer resolves the OpenAI key for a card mint of agent `id`,
-/// using exactly the same env layering as `mint_agent_card`. Returns a string
-/// discriminant so the mint dialog can distinguish whether the key is writable
-/// (global/none → dialog can update it) or read-only from a higher-priority
-/// layer (agent/persona/process → show an instruction instead of an input).
-///
-/// Possible return values: `"none"` | `"global"` | `"persona"` | `"agent"` |
-/// `"process"`. Never returns the key itself.
+/// Report which env layer resolves the OpenAI key for a card mint of agent
+/// `id` — same layering as `mint_agent_card`. Delegates to `resolve_key_layer`
+/// for the classification; see that helper for the return-value contract.
 #[tauri::command]
 pub fn card_mint_key_status(
     id: String,
@@ -482,40 +506,13 @@ pub fn card_mint_key_status(
         .map(|p| p.env_vars.clone())
         .unwrap_or_default();
 
-    // Mirror the exact resolution order used by `mint_agent_card` and report
-    // which layer would supply the key, so the dialog can decide whether to
-    // offer a writable input (global/none) or a read-only redirect.
-    let key = "OPENAI_API_KEY";
-    if record
-        .env_vars
-        .get(key)
-        .map(|v| !v.trim().is_empty())
-        .unwrap_or(false)
-    {
-        return Ok("agent".to_string());
-    }
-    if persona_env
-        .get(key)
-        .map(|v| !v.trim().is_empty())
-        .unwrap_or(false)
-    {
-        return Ok("persona".to_string());
-    }
-    if global
-        .env_vars
-        .get(key)
-        .map(|v| !v.trim().is_empty())
-        .unwrap_or(false)
-    {
-        return Ok("global".to_string());
-    }
-    if std::env::var(key)
-        .map(|v| !v.trim().is_empty())
-        .unwrap_or(false)
-    {
-        return Ok("process".to_string());
-    }
-    Ok("none".to_string())
+    Ok(resolve_key_layer(
+        &global.env_vars,
+        &persona_env,
+        &record.env_vars,
+        std::env::var("OPENAI_API_KEY").ok(),
+    )
+    .to_string())
 }
 
 /// Mint a trading card for the agent identified by `id` (instance pubkey,

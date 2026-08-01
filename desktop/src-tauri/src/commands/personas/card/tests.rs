@@ -71,9 +71,9 @@ fn key_resolution_layering_record_wins() {
     assert!(resolve_env_from_layers("OPENAI_API_KEY", &global, &persona, &record, None).is_none());
 }
 
-/// Prove that `card_mint_key_status` layer detection matches the priority order
-/// that `mint_agent_card` uses for resolution, so the dialog update path is only
-/// offered when writing global will actually become the resolved key.
+/// Prove that `resolve_key_layer` classifies layers in the same precedence
+/// order that `mint_agent_card`/`resolve_env_from_layers` uses, so the dialog
+/// update path is only offered when writing global will actually win.
 #[test]
 fn key_status_layer_matches_mint_resolution_priority() {
     let key = "OPENAI_API_KEY";
@@ -81,41 +81,15 @@ fn key_status_layer_matches_mint_resolution_priority() {
     let mut persona = BTreeMap::new();
     let mut record = BTreeMap::new();
 
-    // Helper that mirrors card_mint_key_status logic inline.
-    let layer_for = |global: &BTreeMap<String, String>,
-                     persona: &BTreeMap<String, String>,
-                     record: &BTreeMap<String, String>|
-     -> &'static str {
-        if record
-            .get(key)
-            .map(|v| !v.trim().is_empty())
-            .unwrap_or(false)
-        {
-            return "agent";
-        }
-        if persona
-            .get(key)
-            .map(|v| !v.trim().is_empty())
-            .unwrap_or(false)
-        {
-            return "persona";
-        }
-        if global
-            .get(key)
-            .map(|v| !v.trim().is_empty())
-            .unwrap_or(false)
-        {
-            return "global";
-        }
-        "none"
-    };
-
     // No key anywhere → "none"
-    assert_eq!(layer_for(&global, &persona, &record), "none");
+    assert_eq!(resolve_key_layer(&global, &persona, &record, None), "none");
 
     // Only global → "global" (the only writable layer)
     global.insert(key.to_string(), "sk-global".to_string());
-    assert_eq!(layer_for(&global, &persona, &record), "global");
+    assert_eq!(
+        resolve_key_layer(&global, &persona, &record, None),
+        "global"
+    );
     // mint resolution also picks global when record and persona are empty
     assert_eq!(
         resolve_env_from_layers(key, &global, &persona, &record, None).as_deref(),
@@ -124,7 +98,10 @@ fn key_status_layer_matches_mint_resolution_priority() {
 
     // Persona overrides global → status must report "persona", NOT "global"
     persona.insert(key.to_string(), "sk-persona".to_string());
-    assert_eq!(layer_for(&global, &persona, &record), "persona");
+    assert_eq!(
+        resolve_key_layer(&global, &persona, &record, None),
+        "persona"
+    );
     // mint would use the persona key
     assert_eq!(
         resolve_env_from_layers(key, &global, &persona, &record, None).as_deref(),
@@ -142,10 +119,30 @@ fn key_status_layer_matches_mint_resolution_priority() {
 
     // Agent record overrides both → status must report "agent"
     record.insert(key.to_string(), "sk-agent".to_string());
-    assert_eq!(layer_for(&global, &persona, &record), "agent");
+    assert_eq!(resolve_key_layer(&global, &persona, &record, None), "agent");
     assert_eq!(
         resolve_env_from_layers(key, &global, &persona, &record, None).as_deref(),
         Some("sk-agent")
+    );
+
+    // Process env is last resort (only when all map layers are empty)
+    let empty = BTreeMap::new();
+    assert_eq!(
+        resolve_key_layer(&empty, &empty, &empty, Some("sk-process".to_string())),
+        "process"
+    );
+
+    // Blank values are skipped — process wins over a whitespace global
+    let mut blank_global = BTreeMap::new();
+    blank_global.insert(key.to_string(), "   ".to_string());
+    assert_eq!(
+        resolve_key_layer(
+            &blank_global,
+            &empty,
+            &empty,
+            Some("sk-process".to_string())
+        ),
+        "process"
     );
 }
 

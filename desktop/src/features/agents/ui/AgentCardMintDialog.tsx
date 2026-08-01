@@ -37,9 +37,11 @@ import { Textarea } from "@/shared/ui/textarea";
 import { SnapshotOptionMenu } from "./SnapshotOptionMenu";
 import {
   isReadOnlyLayer,
-  isWritableLayer,
+  keyPanelTitle,
+  showCancelButton,
   showKeyPanel,
   showKeyStatusRow,
+  showReadOnlyRow,
 } from "./cardMintKeyUtils";
 
 const OPENAI_KEYS_URL = "https://platform.openai.com/api-keys";
@@ -146,10 +148,6 @@ export function AgentCardMintDialog({
     queryFn: () => cardMintKeyStatus(agentId),
   });
   const keyLayer: CardMintKeyLayer | undefined = keyStatusQuery.data;
-  // True when we have confirmed no key resolves anywhere.
-  const needsKey = keyLayer === "none";
-  // True when the key is writable from this dialog (global default or unset).
-  const keyIsWritable = isWritableLayer(keyLayer);
   // True when the key resolves from a layer this dialog cannot update.
   const keyIsReadOnly = isReadOnlyLayer(keyLayer);
 
@@ -216,11 +214,7 @@ export function AgentCardMintDialog({
             <div className="flex flex-col gap-2 rounded-md border border-border p-3">
               <span className="flex items-center gap-1.5 text-sm font-medium">
                 <KeyRound className="h-3.5 w-3.5" />
-                {needsKey || editingKey
-                  ? needsKey
-                    ? "One-time setup: OpenAI API key"
-                    : "Update OpenAI API key"
-                  : "OpenAI API key"}
+                {keyPanelTitle(keyLayer, editingKey)}
               </span>
               {keyIsReadOnly ? (
                 // Key resolves from a layer the dialog cannot write to — show
@@ -277,7 +271,7 @@ export function AgentCardMintDialog({
               onExportInstead={onExportInstead}
             />
             <div className="flex justify-end gap-2">
-              {editingKey && keyIsWritable ? (
+              {showCancelButton(keyLayer, editingKey) ? (
                 <Button
                   data-testid="agent-card-key-cancel"
                   disabled={saveKeyMutation.isPending}
@@ -401,6 +395,31 @@ export function AgentCardMintDialog({
                   variant="link"
                 >
                   Update
+                </Button>
+              </div>
+            ) : null}
+            {showReadOnlyRow(keyLayer, editingKey) ? (
+              <div
+                className="flex items-center gap-1 text-xs text-muted-foreground"
+                data-testid="agent-card-key-readonly-row"
+              >
+                <KeyRound className="h-3 w-3 shrink-0" />
+                <span>
+                  {keyLayer === "agent"
+                    ? "OpenAI key from agent settings"
+                    : keyLayer === "persona"
+                      ? "OpenAI key from persona settings"
+                      : "OpenAI key from environment"}
+                </span>
+                <span aria-hidden>·</span>
+                <Button
+                  className="h-auto p-0 text-xs"
+                  data-testid="agent-card-key-why"
+                  onClick={() => setEditingKey(true)}
+                  size="sm"
+                  variant="link"
+                >
+                  Why?
                 </Button>
               </div>
             ) : null}

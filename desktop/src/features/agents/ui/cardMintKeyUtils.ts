@@ -8,12 +8,12 @@ import type { CardMintKeyLayer } from "@/shared/api/tauriPersonas";
  * test failures rather than silently diverging.
  */
 
-/** Whether the key panel should be shown (setup, update, or read-only redirect). */
+/** Whether the key panel should be shown (setup or user-initiated update only). */
 export function showKeyPanel(
   keyLayer: CardMintKeyLayer | undefined,
   editingKey: boolean,
 ): boolean {
-  return keyLayer === "none" || editingKey || isReadOnlyLayer(keyLayer);
+  return keyLayer === "none" || editingKey;
 }
 
 /**
@@ -38,12 +38,12 @@ export function isReadOnlyLayer(
   );
 }
 
-/** Whether the "Cancel" button should be shown (update mode only). */
+/** Whether the "Cancel" button should be shown (update mode only, with a mint form to return to). */
 export function showCancelButton(
   keyLayer: CardMintKeyLayer | undefined,
   editingKey: boolean,
 ): boolean {
-  return editingKey && isWritableLayer(keyLayer) && keyLayer !== "none";
+  return editingKey && keyLayer !== "none";
 }
 
 /** Whether the "Using your saved OpenAI key · Update" status row should be shown. */
@@ -52,6 +52,14 @@ export function showKeyStatusRow(
   editingKey: boolean,
 ): boolean {
   return keyLayer === "global" && !editingKey;
+}
+
+/** Whether the read-only provenance row should be shown on the mint form. */
+export function showReadOnlyRow(
+  keyLayer: CardMintKeyLayer | undefined,
+  editingKey: boolean,
+): boolean {
+  return isReadOnlyLayer(keyLayer) && !editingKey;
 }
 
 /** The header title for the key-setup panel. */
