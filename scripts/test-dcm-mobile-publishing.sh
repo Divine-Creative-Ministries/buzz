@@ -39,6 +39,9 @@ git -C "$test_repo" tag -a dcm-mobile-v1.2.3-rc.1 -m candidate "$target_sha"
 
 if (
     cd "$test_repo"
+    GITHUB_ACTIONS=true \
+        GITHUB_EVENT_NAME=workflow_dispatch \
+        GITHUB_REF=refs/heads/dcm-production \
     GITHUB_REPOSITORY=Divine-Creative-Ministries/buzz \
         "$verifier" dcm-mobile-v1.2.3-rc.1 "$target_sha" 1.2.3 >/dev/null
 ); then
@@ -49,6 +52,35 @@ fi
 
 if (
     cd "$test_repo"
+    GITHUB_ACTIONS=true \
+        GITHUB_EVENT_NAME=pull_request \
+        GITHUB_REF=refs/heads/dcm-production \
+        GITHUB_REPOSITORY=Divine-Creative-Ministries/buzz \
+        "$verifier" dcm-mobile-v1.2.3-rc.1 "$target_sha" 1.2.3 >/dev/null 2>&1
+); then
+    fail "non-manual GitHub Actions event must be rejected"
+else
+    pass "rejects non-manual GitHub Actions events"
+fi
+
+if (
+    cd "$test_repo"
+    GITHUB_ACTIONS=true \
+        GITHUB_EVENT_NAME=workflow_dispatch \
+        GITHUB_REF=refs/heads/main \
+        GITHUB_REPOSITORY=Divine-Creative-Ministries/buzz \
+        "$verifier" dcm-mobile-v1.2.3-rc.1 "$target_sha" 1.2.3 >/dev/null 2>&1
+); then
+    fail "dispatch from a non-production branch must be rejected"
+else
+    pass "rejects dispatches outside dcm-production"
+fi
+
+if (
+    cd "$test_repo"
+    GITHUB_ACTIONS=true \
+        GITHUB_EVENT_NAME=workflow_dispatch \
+        GITHUB_REF=refs/heads/dcm-production \
     GITHUB_REPOSITORY=attacker/buzz \
         "$verifier" dcm-mobile-v1.2.3-rc.1 "$target_sha" 1.2.3 >/dev/null 2>&1
 ); then
@@ -60,6 +92,9 @@ fi
 git -C "$test_repo" tag dcm-mobile-v1.2.3-rc.2 "$target_sha"
 if (
     cd "$test_repo"
+    GITHUB_ACTIONS=true \
+        GITHUB_EVENT_NAME=workflow_dispatch \
+        GITHUB_REF=refs/heads/dcm-production \
     GITHUB_REPOSITORY=Divine-Creative-Ministries/buzz \
         "$verifier" dcm-mobile-v1.2.3-rc.2 "$target_sha" 1.2.3 >/dev/null 2>&1
 ); then
@@ -70,6 +105,9 @@ fi
 
 if (
     cd "$test_repo"
+    GITHUB_ACTIONS=true \
+        GITHUB_EVENT_NAME=workflow_dispatch \
+        GITHUB_REF=refs/heads/dcm-production \
     GITHUB_REPOSITORY=Divine-Creative-Ministries/buzz \
         "$verifier" dcm-mobile-v1.2.3-rc.1 "$target_sha" 1.2.4 >/dev/null 2>&1
 ); then
@@ -81,6 +119,9 @@ fi
 wrong_sha="0000000000000000000000000000000000000000"
 if (
     cd "$test_repo"
+    GITHUB_ACTIONS=true \
+        GITHUB_EVENT_NAME=workflow_dispatch \
+        GITHUB_REF=refs/heads/dcm-production \
     GITHUB_REPOSITORY=Divine-Creative-Ministries/buzz \
         "$verifier" dcm-mobile-v1.2.3-rc.1 "$wrong_sha" 1.2.3 >/dev/null 2>&1
 ); then
@@ -92,6 +133,9 @@ fi
 printf 'dirty\n' >> "$test_repo/mobile/ios/Flutter/Release.xcconfig"
 if (
     cd "$test_repo"
+    GITHUB_ACTIONS=true \
+        GITHUB_EVENT_NAME=workflow_dispatch \
+        GITHUB_REF=refs/heads/dcm-production \
     GITHUB_REPOSITORY=Divine-Creative-Ministries/buzz \
         "$verifier" dcm-mobile-v1.2.3-rc.1 "$target_sha" 1.2.3 >/dev/null 2>&1
 ); then
