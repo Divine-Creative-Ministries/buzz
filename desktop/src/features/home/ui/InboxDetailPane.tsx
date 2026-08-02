@@ -34,6 +34,7 @@ import { orderMentionPubkeysByText } from "@/features/messages/lib/orderMentionP
 import { getThreadReference } from "@/features/messages/lib/threading";
 import { normalizePubkey } from "@/shared/lib/pubkey";
 import { MessageComposer } from "@/features/messages/ui/MessageComposer";
+import { MessageReadAloudBar } from "@/features/messages/ui/MessageReadAloudBar";
 import { useAnchoredScroll } from "@/features/messages/ui/useAnchoredScroll";
 import { useComposerHeightPadding } from "@/features/messages/ui/useComposerHeightPadding";
 import { UpdateIndicator } from "@/features/settings/UpdateIndicator";
@@ -633,6 +634,7 @@ function InboxMessageDetailPane({
             }}
           />
           <div className="pointer-events-auto">
+            <MessageReadAloudBar />
             <MessageComposer
               audienceContext={
                 isDirectMessage
