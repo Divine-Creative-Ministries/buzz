@@ -29,6 +29,9 @@ case "${1:-help}" in
   start|up)
     compose up -d --wait --wait-timeout 300
     ;;
+  restart)
+    compose up -d --wait --wait-timeout 300 --force-recreate relay pairing
+    ;;
   stop|down)
     compose down
     ;;
@@ -41,6 +44,26 @@ case "${1:-help}" in
   deploy)
     exec /usr/local/sbin/buzz-deploy deploy "${2:?commit required}" "${3:?digest-pinned image required}"
     ;;
+  add-member)
+    exec docker compose \
+      --env-file "$COMPOSE_SOURCE_DIR/.env" \
+      -f "$COMPOSE_SOURCE_DIR/compose.yml" \
+      exec relay /usr/local/bin/buzz-admin add-member \
+      --pubkey "${2:?npub or hex pubkey required}" "${@:3}"
+    ;;
+  remove-member)
+    exec docker compose \
+      --env-file "$COMPOSE_SOURCE_DIR/.env" \
+      -f "$COMPOSE_SOURCE_DIR/compose.yml" \
+      exec relay /usr/local/bin/buzz-admin remove-member \
+      --pubkey "${2:?npub or hex pubkey required}" "${@:3}"
+    ;;
+  list-members)
+    exec docker compose \
+      --env-file "$COMPOSE_SOURCE_DIR/.env" \
+      -f "$COMPOSE_SOURCE_DIR/compose.yml" \
+      exec relay /usr/local/bin/buzz-admin list-members
+    ;;
   help|-h|--help)
     cat <<'EOF'
 Usage: buzzctl <command>
@@ -50,10 +73,16 @@ Commands:
   config                 Validate the rendered Compose configuration
   logs [service]         Follow logs; relay is the default
   start                  Start the pinned production release
+  restart                Recreate the relay and pairing services
   stop                   Stop the production stack without deleting volumes
   backup                 Create a consistent pre-deploy-style backup
   rollback               Return to the previous image when schema-compatible
   deploy <sha> <image>   Manually deploy an approved digest-pinned image
+  add-member <npub> [--role member|admin]
+                         Add a relay member
+  remove-member <npub> [--role member|admin]
+                         Remove a relay member
+  list-members           List relay members
 EOF
     ;;
   *)
