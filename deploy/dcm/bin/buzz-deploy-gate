@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+readonly EXPECTED_IMAGE_PREFIX="ghcr.io/divine-creative-ministries/buzz@sha256:"
+readonly ORIGINAL_COMMAND="${SSH_ORIGINAL_COMMAND:-}"
+
+reject() {
+  echo "Rejected production deployment request." >&2
+  exit 64
+}
+
+IFS=' ' read -r action commit image extra <<<"${ORIGINAL_COMMAND}"
+
+[[ "${action:-}" == "deploy" ]] || reject
+[[ "${commit:-}" =~ ^[0-9a-f]{40}$ ]] || reject
+[[ "${image:-}" =~ ^${EXPECTED_IMAGE_PREFIX}[0-9a-f]{64}$ ]] || reject
+[[ -z "${extra:-}" ]] || reject
+
+if [[ "${BUZZ_DEPLOY_GATE_TEST_ONLY:-false}" == "true" ]]; then
+  printf 'deploy %s %s\n' "$commit" "$image"
+  exit 0
+fi
+
+exec sudo -n /usr/local/sbin/buzz-deploy deploy "$commit" "$image"

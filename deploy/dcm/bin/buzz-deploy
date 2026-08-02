@@ -1,0 +1,315 @@
+#!/usr/bin/env bash
+set -euo pipefail
+umask 077
+
+readonly COMPOSE_SOURCE_DIR="/opt/buzz/deploy/compose"
+readonly DCM_CONFIG_DIR="/etc/buzz"
+readonly STATE_DIR="/var/lib/buzz-deploy"
+readonly BACKUP_ROOT="/var/backups/buzz"
+readonly LOCK_FILE="/run/lock/buzz-deploy.lock"
+readonly DEPLOY_LOG="/var/log/buzz-deploy.log"
+readonly PUBLIC_URL="https://buzz.divinecreative.org"
+readonly EXPECTED_IMAGE_PREFIX="ghcr.io/divine-creative-ministries/buzz@sha256:"
+readonly BACKUP_KEEP="10"
+
+mkdir -p "$STATE_DIR" "$BACKUP_ROOT"
+touch "$DEPLOY_LOG"
+chmod 700 "$STATE_DIR" "$BACKUP_ROOT"
+chmod 600 "$DEPLOY_LOG"
+
+exec 9>"$LOCK_FILE"
+if ! flock -n 9; then
+  echo "Another Buzz deployment is already running." >&2
+  exit 75
+fi
+
+log() {
+  local message="$*"
+  printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$message" | tee -a "$DEPLOY_LOG" >&2
+  logger -t buzz-deploy -- "$message" || true
+}
+
+die() {
+  log "ERROR: $*"
+  exit 1
+}
+
+require_file() {
+  [[ -f "$1" ]] || die "Missing required file: $1"
+}
+
+require_layout() {
+  require_file "$COMPOSE_SOURCE_DIR/compose.yml"
+  require_file "$COMPOSE_SOURCE_DIR/compose.caddy.yml"
+  require_file "$COMPOSE_SOURCE_DIR/.env"
+  require_file "$DCM_CONFIG_DIR/compose.pairing.yml"
+  require_file "$DCM_CONFIG_DIR/Caddyfile"
+  require_file "$STATE_DIR/image.yml"
+}
+
+compose() {
+  docker compose \
+    --env-file "$COMPOSE_SOURCE_DIR/.env" \
+    -f "$COMPOSE_SOURCE_DIR/compose.yml" \
+    -f "$COMPOSE_SOURCE_DIR/compose.caddy.yml" \
+    -f "$DCM_CONFIG_DIR/compose.pairing.yml" \
+    -f "$STATE_DIR/image.yml" \
+    "$@"
+}
+
+write_image_overlay() {
+  local image="$1"
+  local destination="$2"
+  local temporary
+  temporary=$(mktemp "$STATE_DIR/image.XXXXXX")
+  cat >"$temporary" <<EOF
+services:
+  relay:
+    image: ${image}
+  pairing:
+    image: ${image}
+EOF
+  chmod 600 "$temporary"
+  mv -f "$temporary" "$destination"
+}
+
+schema_version() {
+  # Expansion is intentionally performed by the shell inside the container.
+  # shellcheck disable=SC2016
+  compose exec -T postgres sh -euc \
+    'PGPASSWORD="$POSTGRES_PASSWORD" psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Atqc "SELECT COALESCE(MAX(version), 0) FROM _sqlx_migrations"' \
+    2>/dev/null || printf 'unknown\n'
+}
+
+archive_volume() {
+  local volume="$1"
+  local archive="$2"
+  local backup_dir="$3"
+  docker volume inspect "$volume" >/dev/null
+  docker run --rm --network none \
+    -v "$volume:/source:ro" \
+    -v "$backup_dir:/backup" \
+    alpine:3.22 \
+    tar -C /source -czf "/backup/$archive" .
+}
+
+prune_backups() {
+  local -a backups=()
+  local index
+  mapfile -t backups < <(
+    find "$BACKUP_ROOT" -mindepth 1 -maxdepth 1 -type d -name 'predeploy-*' \
+      -printf '%T@ %p\n' | sort -rn | cut -d' ' -f2-
+  )
+  for ((index = BACKUP_KEEP; index < ${#backups[@]}; index++)); do
+    [[ "${backups[$index]}" == "$BACKUP_ROOT"/predeploy-* ]] || die "Unsafe backup prune target"
+    rm -rf -- "${backups[$index]}"
+  done
+}
+
+create_backup() {
+  local target_commit="$1"
+  local timestamp backup_dir
+  timestamp=$(date -u +%Y%m%dT%H%M%SZ)
+  backup_dir="$BACKUP_ROOT/predeploy-${timestamp}-${target_commit:0:12}"
+  install -d -m 700 "$backup_dir"
+
+  log "Stopping relay write paths for a consistent pre-deploy backup"
+  compose stop relay pairing >/dev/null
+
+  log "Creating pre-deploy backup at $backup_dir"
+  # Expansion is intentionally performed by the shell inside the container.
+  # shellcheck disable=SC2016
+  if ! compose exec -T postgres sh -euc \
+    'PGPASSWORD="$POSTGRES_PASSWORD" pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc' \
+    >"$backup_dir/postgres.dump"; then
+    log "PostgreSQL backup failed; restarting the previous release"
+    compose up -d --wait --wait-timeout 300 >/dev/null || true
+    return 1
+  fi
+
+  if ! archive_volume buzz-prod_buzz-minio-data minio.tar.gz "$backup_dir" ||
+    ! archive_volume buzz-prod_buzz-git-data git.tar.gz "$backup_dir" ||
+    ! archive_volume buzz-prod_buzz-redis-data redis.tar.gz "$backup_dir"; then
+    log "Persistent-volume backup failed; restarting the previous release"
+    compose up -d --wait --wait-timeout 300 >/dev/null || true
+    return 1
+  fi
+
+  if ! {
+    install -m 600 "$COMPOSE_SOURCE_DIR/.env" "$backup_dir/production.env"
+    install -m 600 "$STATE_DIR/image.yml" "$backup_dir/image.yml"
+    cp -a "$DCM_CONFIG_DIR/compose.pairing.yml" "$DCM_CONFIG_DIR/Caddyfile" "$backup_dir/"
+    (
+      cd "$backup_dir"
+      sha256sum postgres.dump minio.tar.gz git.tar.gz redis.tar.gz production.env image.yml \
+        compose.pairing.yml Caddyfile >SHA256SUMS
+    )
+    printf '%s\n' "$(schema_version)" >"$backup_dir/schema.version"
+    chmod 600 "$backup_dir"/*
+    prune_backups
+  }; then
+    log "Backup finalization failed; restarting the previous release"
+    compose up -d --wait --wait-timeout 300 >/dev/null || true
+    return 1
+  fi
+  printf '%s\n' "$backup_dir"
+}
+
+healthcheck() {
+  local headers
+  headers=$(mktemp "$STATE_DIR/pairing-headers.XXXXXX")
+  trap 'rm -f "$headers"' RETURN
+
+  for _ in {1..60}; do
+    if curl -fsS --max-time 10 "$PUBLIC_URL/_liveness" >/dev/null &&
+      curl -fsS --max-time 10 "$PUBLIC_URL/_readiness" >/dev/null &&
+      curl -fsS --max-time 10 -H 'Accept: application/nostr+json' "$PUBLIC_URL/" | grep -q '"name"'; then
+      : >"$headers"
+      curl --http1.1 -sS --max-time 5 -D "$headers" -o /dev/null \
+        -H 'Connection: Upgrade' \
+        -H 'Upgrade: websocket' \
+        -H 'Sec-WebSocket-Version: 13' \
+        -H 'Sec-WebSocket-Key: ZGNtLXByb2R1Y3Rpb24=' \
+        "$PUBLIC_URL/pair" || true
+      if grep -Eq '^HTTP/[0-9.]+ 101([[:space:]]|$)' "$headers"; then
+        rm -f "$headers"
+        trap - RETURN
+        return 0
+      fi
+    fi
+    sleep 5
+  done
+
+  rm -f "$headers"
+  trap - RETURN
+  return 1
+}
+
+verify_image() {
+  local commit="$1"
+  local image="$2"
+  local revision
+  docker pull "$image" >/dev/null
+  revision=$(docker image inspect "$image" --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')
+  [[ "$revision" == "$commit" ]] || die "Image revision label does not match requested commit"
+}
+
+record_success() {
+  local commit="$1"
+  local image="$2"
+  local schema="$3"
+
+  if [[ -f "$STATE_DIR/current.commit" ]]; then
+    cp -f "$STATE_DIR/current.commit" "$STATE_DIR/previous.commit"
+    cp -f "$STATE_DIR/current.image" "$STATE_DIR/previous.image"
+    cp -f "$STATE_DIR/current.schema" "$STATE_DIR/previous.schema"
+  fi
+  printf '%s\n' "$commit" >"$STATE_DIR/current.commit"
+  printf '%s\n' "$image" >"$STATE_DIR/current.image"
+  printf '%s\n' "$schema" >"$STATE_DIR/current.schema"
+  chmod 600 "$STATE_DIR"/*
+}
+
+restore_previous_release() {
+  local previous_overlay="$1"
+  cp -f "$previous_overlay" "$STATE_DIR/image.yml"
+  chmod 600 "$STATE_DIR/image.yml"
+  compose up -d --wait --wait-timeout 300
+  healthcheck
+}
+
+deploy_release() {
+  local commit="$1"
+  local image="$2"
+  local previous_overlay schema_before schema_after backup_dir
+
+  [[ "$commit" =~ ^[0-9a-f]{40}$ ]] || die "Commit must be a full lowercase SHA"
+  [[ "$image" =~ ^${EXPECTED_IMAGE_PREFIX}[0-9a-f]{64}$ ]] || die "Unexpected image repository or digest"
+
+  require_layout
+  previous_overlay=$(mktemp "$STATE_DIR/previous-image.XXXXXX")
+  cp -f "$STATE_DIR/image.yml" "$previous_overlay"
+  trap 'rm -f "$previous_overlay"' RETURN
+
+  log "Verifying immutable image for commit $commit"
+  verify_image "$commit" "$image"
+  docker pull alpine:3.22 >/dev/null
+  schema_before=$(schema_version)
+  if ! backup_dir=$(create_backup "$commit"); then
+    die "Pre-deploy backup failed; the previous release was restarted"
+  fi
+  log "Pre-deploy backup completed: $backup_dir"
+
+  write_image_overlay "$image" "$STATE_DIR/image.yml"
+  log "Starting candidate image $image"
+  if compose up -d --wait --wait-timeout 300 && healthcheck; then
+    schema_after=$(schema_version)
+    record_success "$commit" "$image" "$schema_after"
+    log "Deployment succeeded for commit $commit at schema $schema_after"
+    rm -f "$previous_overlay"
+    trap - RETURN
+    return 0
+  fi
+
+  schema_after=$(schema_version)
+  if [[ "$schema_before" != "unknown" && "$schema_after" == "$schema_before" ]]; then
+    log "Candidate failed health checks without a schema change; rolling back automatically"
+    if restore_previous_release "$previous_overlay"; then
+      log "Automatic rollback succeeded"
+    else
+      die "Candidate and rollback health checks failed; operator recovery is required"
+    fi
+    die "Candidate failed health checks and was rolled back"
+  fi
+
+  die "Candidate failed after schema changed from $schema_before to $schema_after; automatic binary rollback is unsafe. Use backup $backup_dir for reviewed recovery"
+}
+
+manual_backup() {
+  require_layout
+  local commit
+  commit=$(cat "$STATE_DIR/current.commit" 2>/dev/null || printf 'manual-backup')
+  create_backup "$commit"
+  compose up -d --wait --wait-timeout 300 >/dev/null
+  healthcheck || die "Services failed health checks after backup"
+}
+
+manual_rollback() {
+  require_layout
+  require_file "$STATE_DIR/previous.commit"
+  require_file "$STATE_DIR/previous.image"
+  require_file "$STATE_DIR/previous.schema"
+  require_file "$STATE_DIR/current.schema"
+
+  local previous_commit previous_image previous_schema current_schema
+  previous_commit=$(cat "$STATE_DIR/previous.commit")
+  previous_image=$(cat "$STATE_DIR/previous.image")
+  previous_schema=$(cat "$STATE_DIR/previous.schema")
+  current_schema=$(schema_version)
+
+  [[ "$current_schema" == "$previous_schema" ]] ||
+    die "Rollback blocked: current schema $current_schema does not match previous release schema $previous_schema"
+
+  create_backup "$previous_commit" >/dev/null
+  write_image_overlay "$previous_image" "$STATE_DIR/image.yml"
+  compose up -d --wait --wait-timeout 300
+  healthcheck || die "Manual rollback failed health checks"
+  record_success "$previous_commit" "$previous_image" "$current_schema"
+  log "Manual rollback succeeded to commit $previous_commit"
+}
+
+case "${1:-}" in
+  deploy)
+    deploy_release "${2:?commit required}" "${3:?digest-pinned image required}"
+    ;;
+  backup)
+    manual_backup
+    ;;
+  rollback)
+    manual_rollback
+    ;;
+  *)
+    echo "Usage: buzz-deploy deploy <full-commit-sha> <digest-pinned-image> | backup | rollback" >&2
+    exit 64
+    ;;
+esac

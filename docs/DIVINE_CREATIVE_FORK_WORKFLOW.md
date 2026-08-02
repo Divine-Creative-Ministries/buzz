@@ -132,15 +132,19 @@ Official references:
 
 ## Deployment Rules
 
-A merged pull request is not permission to deploy. Deployment must be requested
-explicitly and must use a reviewed commit from `dcm-production`.
+A merge into `dcm-production` is permission to build and automatically deploy
+that exact commit to `buzz.divinecreative.org`. Agents and reviewers must treat
+the merge button as a production release action. The complete trust boundary,
+backup, health-check, and rollback contract is defined in
+[DCM_PRODUCTION_DEPLOYMENT.md](DCM_PRODUCTION_DEPLOYMENT.md).
 
 - Never use the live VPS as a development workspace. Do not hand-edit
   `/opt/buzz`, files inside running containers, or production database state to
   implement a feature.
 - Build and publish an immutable image tag, such as
   `ghcr.io/divine-creative-ministries/buzz:dcm-<git-sha>`. Record the complete
-  source commit and resulting image digest.
+  source commit and resulting image digest, and deploy by digest rather than by
+  the mutable tag.
 - Before deployment, protect the root-only environment/configuration files and
   create recoverable backups of PostgreSQL, object/media storage, and any
   persistent Git data. Validate restoration in an isolated environment when
@@ -151,6 +155,10 @@ explicitly and must use a reviewed commit from `dcm-production`.
   mobile smoke tests.
 - Keep the previous image, configuration, and recovery instructions available
   until the new version is proven healthy.
+- Pause automatic deployment before merging changes that require a maintenance
+  window, uninstalled root-owned configuration, or a migration whose recovery
+  path has not been proven. Deployment-security scripts on the VPS never update
+  themselves from a repository merge.
 
 Secrets, private keys, `.env` contents, backup archives, and production data
 must never be committed to Git or attached to a public pull request.

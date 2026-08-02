@@ -36,6 +36,20 @@ releasing, or deploying, read
   on the VPS. Build from a reviewed commit, deploy an immutable image, record
   its source SHA and digest, back up state first, and retain a tested rollback
   path.
+- Treat every merge into `dcm-production` as authorization for an immediate
+  automatic deployment to `buzz.divinecreative.org`. Read
+  [docs/DCM_PRODUCTION_DEPLOYMENT.md](docs/DCM_PRODUCTION_DEPLOYMENT.md) before
+  changing workflows, deployment assets, Compose behavior, migrations, or
+  production configuration. Do not merge work that is not production-ready.
+- Preserve the restricted deployment boundary: GitHub may request only a full
+  commit SHA and digest-pinned image through the forced-command `buzzdeploy`
+  key. Never grant that key a shell, broaden its sudo rule, use a floating
+  image tag, expose secrets, remove deployment serialization, or bypass image
+  verification, backup, health, migration, or rollback checks.
+- Set `DCM_DEPLOY_PAUSED=true` before merging a change that requires a
+  maintenance window, uninstalled production configuration, or reviewed
+  migration recovery. Root-owned deployment tooling on the VPS is updated only
+  through a separate operator action; it never self-modifies from CI.
 - Distribute the customized production iOS app as a **Private Custom App** in
   App Store Connect, restricted to the Divine Creative organization in Apple
   Business and delivered through Apple Business or MDM. TestFlight is for
@@ -43,8 +57,9 @@ releasing, or deploying, read
   App Store distribution are not production substitutes unless an explicit,
   documented exception is approved. See the iOS policy in the fork workflow.
 - Never commit credentials, `.env` contents, private keys, backup archives, or
-  production data. Deployment is a separate, explicitly authorized action; a
-  code change or merged pull request does not authorize it.
+  production data. A merge to `dcm-production` authorizes application image
+  deployment only; it does not authorize unrelated infrastructure changes or
+  replacement of the root-owned deployment trust boundary.
 - If the requested action would violate these rules, or the repository/branch
   state is ambiguous, stop and ask for direction instead of guessing.
 

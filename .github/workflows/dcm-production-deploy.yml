@@ -1,0 +1,187 @@
+name: DCM production deploy
+
+on:
+  pull_request:
+    branches: [dcm-production]
+    paths:
+      - ".github/workflows/dcm-production-deploy.yml"
+      - "deploy/dcm/**"
+      - "AGENTS.md"
+      - "docs/DCM_PRODUCTION_DEPLOYMENT.md"
+      - "docs/DIVINE_CREATIVE_FORK_WORKFLOW.md"
+  push:
+    branches: [dcm-production]
+  workflow_dispatch:
+
+concurrency:
+  group: dcm-production-deploy
+  cancel-in-progress: false
+
+permissions: {}
+
+env:
+  IMAGE_NAME: ghcr.io/divine-creative-ministries/buzz
+
+jobs:
+  validate:
+    name: Validate DCM deployment files
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+
+      - name: Validate scripts
+        run: deploy/dcm/tests/test-deploy-scripts.sh
+
+  build:
+    name: Build immutable production image
+    if: github.event_name != 'pull_request'
+    needs: validate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - name: Require the production branch
+        env:
+          SOURCE_REF: ${{ github.ref }}
+        run: |
+          if [[ "$SOURCE_REF" != "refs/heads/dcm-production" ]]; then
+            echo "::error::Production builds must use dcm-production; got $SOURCE_REF"
+            exit 1
+          fi
+
+      - name: Checkout exact production commit
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify checked-out commit
+        run: test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
+        with:
+          buildkitd-config-inline: |
+            [worker.oci]
+              max-parallelism = 2
+
+      - name: Log in to GHCR
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and publish exact commit
+        id: build
+        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
+        with:
+          context: .
+          file: ./Dockerfile
+          target: runtime
+          platforms: linux/amd64
+          push: true
+          tags: ${{ env.IMAGE_NAME }}:dcm-${{ github.sha }}
+          labels: |
+            org.opencontainers.image.title=Divine Creative Buzz
+            org.opencontainers.image.description=Divine Creative Ministries production Buzz relay
+            org.opencontainers.image.licenses=Apache-2.0
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+          cache-from: type=registry,ref=${{ env.IMAGE_NAME }}-buildcache:amd64
+          cache-to: type=registry,ref=${{ env.IMAGE_NAME }}-buildcache:amd64,mode=max,compression=zstd
+
+      - name: Attest image provenance
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        with:
+          subject-name: ${{ env.IMAGE_NAME }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+
+      - name: Verify published provenance
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+        run: gh attestation verify "oci://${IMAGE_NAME}@${IMAGE_DIGEST}" --repo "$GITHUB_REPOSITORY"
+
+      - name: Record immutable image
+        env:
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          {
+            echo "### DCM production image"
+            echo
+            echo "Commit: \`$GITHUB_SHA\`"
+            echo "Image: \`${IMAGE_NAME}@${IMAGE_DIGEST}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  deploy:
+    name: Deploy to buzz.divinecreative.org
+    if: needs.build.result == 'success' && vars.DCM_DEPLOY_PAUSED != 'true'
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment:
+      name: production
+      url: https://buzz.divinecreative.org
+    permissions:
+      contents: read
+    steps:
+      - name: Configure restricted SSH identity
+        env:
+          DEPLOY_KEY: ${{ secrets.DCM_DEPLOY_SSH_KEY }}
+          KNOWN_HOSTS: ${{ vars.DCM_DEPLOY_KNOWN_HOSTS }}
+        run: |
+          install -m 700 -d "$HOME/.ssh"
+          printf '%s\n' "$DEPLOY_KEY" > "$HOME/.ssh/dcm_deploy"
+          chmod 600 "$HOME/.ssh/dcm_deploy"
+          printf '%s\n' "$KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/known_hosts"
+          ssh-keygen -y -f "$HOME/.ssh/dcm_deploy" >/dev/null
+          ssh-keygen -l -f "$HOME/.ssh/known_hosts"
+
+      - name: Request digest-pinned deployment
+        env:
+          DEPLOY_HOST: ${{ vars.DCM_DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ vars.DCM_DEPLOY_PORT }}
+          DEPLOY_USER: ${{ vars.DCM_DEPLOY_USER }}
+          IMAGE_DIGEST: ${{ needs.build.outputs.digest }}
+        run: |
+          : "${DEPLOY_HOST:?missing DCM_DEPLOY_HOST}"
+          : "${DEPLOY_PORT:?missing DCM_DEPLOY_PORT}"
+          : "${DEPLOY_USER:?missing DCM_DEPLOY_USER}"
+          : "${IMAGE_DIGEST:?missing image digest}"
+          ssh \
+            -i "$HOME/.ssh/dcm_deploy" \
+            -p "$DEPLOY_PORT" \
+            -o BatchMode=yes \
+            -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="$HOME/.ssh/known_hosts" \
+            -o ConnectTimeout=20 \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            "deploy $GITHUB_SHA ${IMAGE_NAME}@${IMAGE_DIGEST}"
+
+      - name: Deployment summary
+        env:
+          IMAGE_DIGEST: ${{ needs.build.outputs.digest }}
+        run: |
+          {
+            echo "### Production deployment passed"
+            echo
+            echo "URL: https://buzz.divinecreative.org"
+            echo "Commit: \`$GITHUB_SHA\`"
+            echo "Image: \`${IMAGE_NAME}@${IMAGE_DIGEST}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
