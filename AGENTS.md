@@ -56,6 +56,22 @@ releasing, or deploying, read
   temporary testing only; development, Ad Hoc, Enterprise, unlisted, and public
   App Store distribution are not production substitutes unless an explicit,
   documented exception is approved. See the iOS policy in the fork workflow.
+- Distribute the customized production Android app as a **Managed Google Play
+  private app** owned by `hello@divinecreative.org` and restricted to the
+  Divine Creative Google organization. The internal-testing track is for
+  release validation, not the durable production distribution channel. Never
+  publish the DCM package publicly or move it to another developer account
+  without explicit approval and a migration plan. Read
+  [docs/DCM_MOBILE_RELEASE.md](docs/DCM_MOBILE_RELEASE.md) before changing
+  mobile identity, signing, store metadata, or release automation.
+- Every DCM mobile release must pass through the test lanes before production:
+  upload the iOS candidate to TestFlight internal testing and the Android
+  candidate to Google Play internal testing, run the documented real-device
+  checks, and promote the same tested build. Never publish or promote a mobile
+  build merely because code merged to `dcm-production`; production promotion
+  requires an explicit operator decision. This is a Flutter app, so do not add
+  Expo/EAS release commands or configuration unless a separately reviewed
+  migration adopts Expo.
 - Never commit credentials, `.env` contents, private keys, backup archives, or
   production data. A merge to `dcm-production` authorizes application image
   deployment only; it does not authorize unrelated infrastructure changes or

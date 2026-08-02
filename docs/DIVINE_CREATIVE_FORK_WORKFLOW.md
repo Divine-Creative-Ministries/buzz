@@ -130,6 +130,35 @@ Official references:
 - [TestFlight overview](https://developer.apple.com/help/app-store-connect/test-a-beta-version/testflight-overview)
 - [Apple Developer Program renewal](https://developer.apple.com/help/account/membership/renewal)
 
+## Customized Android App Distribution
+
+The required production distribution method for Divine Creative's customized
+Buzz Android app is a **Managed Google Play private app**:
+
+1. Keep the app in the verified Divine Creative Ministries organization Google
+   Play developer account owned by `hello@divinecreative.org`.
+2. Keep the permanent package name `org.divinecreative.buzz`.
+3. Restrict Managed Google Play availability to the Divine Creative Google
+   organization and assign the app only to approved team users or device
+   groups.
+4. Use Google Play's internal-testing track to validate signed release
+   candidates before promoting an approved build to the private production
+   channel.
+5. Keep the Play App Signing key under Google's protection and keep the upload
+   key and automated-publishing credential outside the repository.
+
+Internal App Sharing links are temporary delivery aids, not the production
+channel. A public production track or a package owned by a personal developer
+account requires an explicit, documented exception. See
+[DCM_MOBILE_RELEASE.md](DCM_MOBILE_RELEASE.md) for the authoritative DCM store
+identities and release boundary.
+
+Official references:
+
+- [Publish private apps from Play Console](https://support.google.com/work/android/answer/9495634)
+- [Set up an internal test](https://support.google.com/googleplay/android-developer/answer/9845334)
+- [Google Play App Signing](https://support.google.com/googleplay/android-developer/answer/9842756)
+
 ## Deployment Rules
 
 A merge into `dcm-production` is permission to build and automatically deploy
