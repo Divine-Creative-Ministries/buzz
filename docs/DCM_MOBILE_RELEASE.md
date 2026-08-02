@@ -32,8 +32,22 @@ submitted form or an existing store record.
 - The App Store Connect app record exists. Its Private Custom App availability
   must name Apple Business organization ID `460525025918` before a production
   submission is finalized.
+- The protected TestFlight group is exactly `DCM Internal Testing`.
+- App Store Connect automation uses the `DCM Mobile Publisher` API key with
+  App Manager access (key ID `LXDUV28A4G`, issuer
+  `4cb9bbc1-da60-492b-99ab-939e9a37543f`). Apple signing uses distribution
+  certificate `XA26G7GRBJ` and App Store provisioning profile
+  `DCM Buzz App Store GitHub Actions` (`Z5BK3W54S2`); both expire on
+  2027-08-02.
 - The Google Play app record exists and is restricted to Divine Creative's
   managed organization `C01d4v998`.
+- Google Play automation uses service account
+  `dcm-buzz-mobile-publisher@pc-api-6923830550302882193-257.iam.gserviceaccount.com`
+  in Cloud project `pc-api-6923830550302882193-257`. The Android Publisher API
+  is enabled. Play Console grants this identity access only to DCM Buzz, with
+  read-only app/quality information and release-to-testing-tracks permission;
+  it has no production, financial, admin, tester-management, or other-app
+  access. A live API check against the `internal` track passed on 2026-08-02.
 
 ## Release lanes and approval gates
 
@@ -281,6 +295,24 @@ The Android build already fails closed when the required
 `BUZZ_ANDROID_UPLOAD_*` values are missing. Release automation must retain that
 behavior, use Google Play App Signing, and grant publishing credentials only
 the minimum app/track permissions required.
+
+The approved Android upload-key alias is `dcm-buzz-upload`. Durable local
+recovery copies use the Mac login Keychain service names below; the service
+names are documentation, but their values must never be copied into the
+repository or an agent prompt:
+
+- `DCM Buzz App Store Connect API Private Key`
+- `DCM Buzz Apple Distribution P12 Base64`
+- `DCM Buzz Apple Distribution P12 Password`
+- `DCM Buzz App Store Provisioning Profile Base64`
+- `DCM Buzz Android Upload Keystore Base64`
+- `DCM Buzz Android Upload Keystore Password`
+- `DCM Buzz Android Upload Key Alias`
+- `DCM Buzz Google Play Service Account JSON`
+
+GitHub Actions receives the matching values only through the protected
+`mobile-testing` environment. Do not export Keychain values into either Buzz
+agent definition or a long-lived shell environment.
 
 Prefer an App Store Connect API key scoped no wider than App Manager for iOS
 automation and a Google Play service account limited to DCM Buzz and the

@@ -79,6 +79,12 @@ The protected test-lane upload is
 exact SHA. Its credentials live in the GitHub `mobile-testing` environment;
 Buzz agents have no mobile signing or store environment variables.
 
+The configured TestFlight group is `DCM Internal Testing`. Google Play uploads
+use the dedicated `DCM Buzz Mobile Publisher` service account, scoped only to
+this app and testing-track releases. The approved Android upload-key alias is
+`dcm-buzz-upload`. Credential values remain in the protected GitHub environment
+and approved Mac login Keychain entries described in the release document.
+
 ## Android release signing
 
 Android release builds fail unless all upload-key inputs are supplied through the

@@ -77,6 +77,12 @@ releasing, or deploying, read
   signing, and VPS secrets only in their documented protected GitHub
   environments or an approved signing keychain/password manager; agents may
   dispatch the protected workflow but must never receive or print those values.
+- The protected mobile publisher identities, exact TestFlight group, Android
+  upload-key alias, Google Cloud project, Play service-account address, and
+  least-privilege Play permissions are recorded in
+  [docs/DCM_MOBILE_RELEASE.md](docs/DCM_MOBILE_RELEASE.md). Treat that document
+  as the source of truth; do not create replacement store credentials or widen
+  permissions merely because a local credential is unavailable.
 - Never commit credentials, `.env` contents, private keys, backup archives, or
   production data. A merge to `dcm-production` authorizes application image
   deployment only; it does not authorize unrelated infrastructure changes or
