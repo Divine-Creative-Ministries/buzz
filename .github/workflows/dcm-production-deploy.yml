@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: dcm-production-deploy
+  group: dcm-production-${{ github.event_name == 'pull_request' && github.event.pull_request.number || 'deploy' }}
   cancel-in-progress: false
 
 permissions: {}
