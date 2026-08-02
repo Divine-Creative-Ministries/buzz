@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+readonly COMPOSE_SOURCE_DIR="/opt/buzz/deploy/compose"
+readonly DCM_CONFIG_DIR="/etc/buzz"
+readonly STATE_DIR="/var/lib/buzz-deploy"
+
+compose() {
+  docker compose \
+    --env-file "$COMPOSE_SOURCE_DIR/.env" \
+    -f "$COMPOSE_SOURCE_DIR/compose.yml" \
+    -f "$COMPOSE_SOURCE_DIR/compose.caddy.yml" \
+    -f "$DCM_CONFIG_DIR/compose.pairing.yml" \
+    -f "$STATE_DIR/image.yml" \
+    "$@"
+}
+
+case "${1:-help}" in
+  status|ps)
+    compose ps
+    ;;
+  config)
+    compose config
+    ;;
+  logs)
+    shift
+    compose logs -f "${@:-relay}"
+    ;;
+  start|up)
+    compose up -d --wait --wait-timeout 300
+    ;;
+  stop|down)
+    compose down
+    ;;
+  backup)
+    exec /usr/local/sbin/buzz-deploy backup
+    ;;
+  rollback)
+    exec /usr/local/sbin/buzz-deploy rollback
+    ;;
+  deploy)
+    exec /usr/local/sbin/buzz-deploy deploy "${2:?commit required}" "${3:?digest-pinned image required}"
+    ;;
+  help|-h|--help)
+    cat <<'EOF'
+Usage: buzzctl <command>
+
+Commands:
+  status                 Show production containers
+  config                 Validate the rendered Compose configuration
+  logs [service]         Follow logs; relay is the default
+  start                  Start the pinned production release
+  stop                   Stop the production stack without deleting volumes
+  backup                 Create a consistent pre-deploy-style backup
+  rollback               Return to the previous image when schema-compatible
+  deploy <sha> <image>   Manually deploy an approved digest-pinned image
+EOF
+    ;;
+  *)
+    echo "Unknown command: $1" >&2
+    exit 64
+    ;;
+esac
