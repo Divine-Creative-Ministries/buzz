@@ -7,11 +7,17 @@ import {
   EllipsisVertical,
   Flag,
   Link2,
+  LoaderCircle,
   MailCheck,
   MailOpen,
+  Pause,
   Pencil,
+  Play,
+  RotateCcw,
   SmilePlus,
+  Square,
   Trash2,
+  Volume2,
 } from "lucide-react";
 import * as React from "react";
 
@@ -35,6 +41,10 @@ import { copyTextToClipboard } from "@/shared/lib/clipboard";
 import { emojiDisplayName } from "@/shared/lib/emojiName";
 import { rewriteRelayUrl } from "@/shared/lib/mediaUrl";
 import { KIND_HUDDLE_STARTED } from "@/shared/constants/kinds";
+import {
+  listenToMessage,
+  useMessageReadAloudForMessage,
+} from "@/features/messages/lib/messageReadAloud";
 import { Button } from "@/shared/ui/button";
 import { DeleteMessageConfirmDialog } from "./DeleteMessageConfirmDialog";
 import {
@@ -60,6 +70,9 @@ function MoreActionsMenu({
   onMarkUnread,
   onMarkRead,
   onOpenChange,
+  onListen,
+  listenDisabled,
+  listenLabel,
   onRemindLater,
   onUnfollowThread,
   open,
@@ -76,6 +89,9 @@ function MoreActionsMenu({
   onMarkUnread?: (message: TimelineMessage) => void;
   onMarkRead?: (message: TimelineMessage) => void;
   onOpenChange: (open: boolean) => void;
+  onListen?: () => void;
+  listenDisabled?: boolean;
+  listenLabel?: string;
   onRemindLater?: (message: TimelineMessage) => void;
   onUnfollowThread?: (message: TimelineMessage) => void;
   open: boolean;
@@ -146,6 +162,13 @@ function MoreActionsMenu({
             >
               <Pencil className="h-4 w-4" />
               Edit message
+            </DropdownMenuItem>
+          ) : null}
+
+          {onListen ? (
+            <DropdownMenuItem disabled={listenDisabled} onClick={onListen}>
+              <Volume2 className="h-4 w-4" />
+              {listenLabel ?? "Listen to message"}
             </DropdownMenuItem>
           ) : null}
 
@@ -389,6 +412,37 @@ export const MessageActionBar = React.memo(function MessageActionBar({
   );
   const hasReplyAction = Boolean(onReply);
   const hasReactionAction = Boolean(onReactionSelect);
+  const playback = useMessageReadAloudForMessage(message.id);
+  const isThisMessage = playback.messageId !== null;
+  const [showPreparing, setShowPreparing] = React.useState(false);
+  React.useEffect(() => {
+    if (!isThisMessage || playback.status !== "preparing") {
+      setShowPreparing(false);
+      return;
+    }
+    const timeout = window.setTimeout(() => setShowPreparing(true), 200);
+    return () => window.clearTimeout(timeout);
+  }, [isThisMessage, playback.status]);
+  const listenLabel = isThisMessage
+    ? playback.status === "preparing"
+      ? "Preparing audio…"
+      : playback.status === "playing"
+        ? playback.engine === "native"
+          ? "Stop reading"
+          : "Pause reading"
+        : playback.status === "paused"
+          ? "Resume reading"
+          : playback.status === "finished"
+            ? "Replay message"
+            : "Listen to message"
+    : "Listen to message";
+  const canListen =
+    !message.pending &&
+    message.kind !== KIND_HUDDLE_STARTED &&
+    message.body.trim().length > 0;
+  const handleListen = React.useCallback(() => {
+    listenToMessage(message.id, message.author, message.body);
+  }, [message.author, message.body, message.id]);
 
   const hasMoreMenuActions =
     Boolean(onEdit) ||
@@ -398,6 +452,7 @@ export const MessageActionBar = React.memo(function MessageActionBar({
     Boolean(onFollowThread) ||
     Boolean(onUnfollowThread) ||
     Boolean(onRemindLater) ||
+    canListen ||
     !message.pending;
 
   const wouldAddReaction = React.useCallback(
@@ -534,6 +589,51 @@ export const MessageActionBar = React.memo(function MessageActionBar({
             </Tooltip>
           ) : null}
 
+          {canListen ? (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  aria-label={listenLabel}
+                  className={ACTION_BUTTON_CLASS}
+                  data-testid={`listen-message-${message.id}`}
+                  disabled={isThisMessage && playback.status === "preparing"}
+                  onClick={handleListen}
+                  size="sm"
+                  type="button"
+                  variant={
+                    isThisMessage &&
+                    (playback.status === "playing" ||
+                      playback.status === "preparing" ||
+                      playback.status === "paused")
+                      ? "secondary"
+                      : "ghost"
+                  }
+                >
+                  {isThisMessage &&
+                  playback.status === "preparing" &&
+                  showPreparing ? (
+                    <LoaderCircle
+                      className={`${ACTION_ICON_CLASS} animate-spin`}
+                    />
+                  ) : isThisMessage && playback.status === "playing" ? (
+                    playback.engine === "native" ? (
+                      <Square className={ACTION_ICON_CLASS} />
+                    ) : (
+                      <Pause className={ACTION_ICON_CLASS} />
+                    )
+                  ) : isThisMessage && playback.status === "paused" ? (
+                    <Play className={ACTION_ICON_CLASS} />
+                  ) : isThisMessage && playback.status === "finished" ? (
+                    <RotateCcw className={ACTION_ICON_CLASS} />
+                  ) : (
+                    <Volume2 className={ACTION_ICON_CLASS} />
+                  )}
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>{listenLabel}</TooltipContent>
+            </Tooltip>
+          ) : null}
+
           {hasMoreMenuActions ? (
             <MoreActionsMenu
               channelId={channelId}
@@ -543,10 +643,13 @@ export const MessageActionBar = React.memo(function MessageActionBar({
               onFollowThread={onFollowThread}
               onMarkUnread={onMarkUnread}
               onMarkRead={onMarkRead}
+              onListen={canListen ? handleListen : undefined}
               onOpenChange={setIsDropdownOpen}
               onRemindLater={onRemindLater}
               onUnfollowThread={onUnfollowThread}
               open={isDropdownOpen}
+              listenDisabled={isThisMessage && playback.status === "preparing"}
+              listenLabel={listenLabel}
               isFollowingThread={isFollowingThread}
               isUnread={isUnread}
             />

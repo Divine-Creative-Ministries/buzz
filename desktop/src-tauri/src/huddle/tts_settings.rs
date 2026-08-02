@@ -463,7 +463,7 @@ async fn apply_tts_settings(
     Ok(voice_change_wait)
 }
 
-fn current_settings(state: &AppState) -> Result<TtsSettings, String> {
+pub(crate) fn current_settings(state: &AppState) -> Result<TtsSettings, String> {
     state
         .huddle_audio
         .tts
