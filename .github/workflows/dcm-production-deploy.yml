@@ -3,12 +3,6 @@ name: DCM production deploy
 on:
   pull_request:
     branches: [dcm-production]
-    paths:
-      - ".github/workflows/dcm-production-deploy.yml"
-      - "deploy/dcm/**"
-      - "AGENTS.md"
-      - "docs/DCM_PRODUCTION_DEPLOYMENT.md"
-      - "docs/DIVINE_CREATIVE_FORK_WORKFLOW.md"
   push:
     branches: [dcm-production]
   workflow_dispatch:
