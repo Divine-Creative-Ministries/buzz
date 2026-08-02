@@ -169,7 +169,7 @@ healthcheck() {
         -H 'Connection: Upgrade' \
         -H 'Upgrade: websocket' \
         -H 'Sec-WebSocket-Version: 13' \
-        -H 'Sec-WebSocket-Key: ZGNtLXByb2R1Y3Rpb24=' \
+        -H 'Sec-WebSocket-Key: ZGNtLXByb2R1Y3Rpb24wMQ==' \
         "$PUBLIC_URL/pair" || true
       if grep -Eq '^HTTP/[0-9.]+ 101([[:space:]]|$)' "$headers"; then
         rm -f "$headers"
