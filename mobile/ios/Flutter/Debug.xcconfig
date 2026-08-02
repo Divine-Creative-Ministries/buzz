@@ -5,8 +5,9 @@
 // without patching tracked files by writing
 // `mobile/ios/Flutter/AppOverrides.xcconfig` containing
 // `BUNDLE_IDENTIFIER = your.app.id` (gitignored).
-BUNDLE_IDENTIFIER = com.buzz.buzzMobile
-APP_DISPLAY_NAME = Buzz
+BUNDLE_IDENTIFIER = org.divinecreative.buzz
+APP_DISPLAY_NAME = DCM Buzz
+DEVELOPMENT_TEAM = AG96733X49
 
 // Worktree-aware debug identity (gitignored, written by
 // scripts/mobile-worktree-overrides.sh): a per-worktree bundle identifier

@@ -205,6 +205,66 @@ builds, uploads to the two test lanes, and status reporting. Production
 promotion must remain an explicit manual or protected-environment approval
 until a separately reviewed policy says otherwise.
 
+## Protected internal-testing workflow
+
+`.github/workflows/dcm-mobile-internal-testing.yml` is the only automated DCM
+store-upload entry point. It is manually dispatched from `dcm-production` and
+accepts an existing immutable candidate tag, its complete commit SHA, the
+marketing version, and the next unused platform build numbers. It never creates
+or moves a tag, merges code, deploys the VPS, submits to App Review, or promotes
+a Google Play release beyond internal testing.
+
+The workflow first validates and tests the candidate without credentials. Its
+iOS and Android signing jobs then use the protected GitHub environment
+`mobile-testing`. Both jobs reverify the exact tag and SHA before the
+environment is entered. They record artifact hashes and store-upload status in
+the GitHub Actions summary and delete runner-local credential files even when a
+job fails.
+
+Configure `mobile-testing` to allow only `dcm-production`. It owns these
+secrets:
+
+| Secret | Purpose |
+| --- | --- |
+| `DCM_ASC_KEY_ID` | App Store Connect API key identifier |
+| `DCM_ASC_ISSUER_ID` | App Store Connect API issuer identifier |
+| `DCM_ASC_PRIVATE_KEY` | One-time downloaded `.p8` private key contents |
+| `DCM_IOS_DISTRIBUTION_CERTIFICATE_P12` | Base64-encoded Apple Distribution certificate and private key |
+| `DCM_IOS_DISTRIBUTION_CERTIFICATE_PASSWORD` | Password protecting the `.p12` file |
+| `DCM_IOS_PROVISIONING_PROFILE` | Base64-encoded App Store provisioning profile for `org.divinecreative.buzz` |
+| `DCM_ANDROID_UPLOAD_KEYSTORE` | Base64-encoded Google Play upload keystore |
+| `DCM_ANDROID_UPLOAD_KEYSTORE_PASSWORD` | Upload-keystore password |
+| `DCM_ANDROID_UPLOAD_KEY_ALIAS` | Upload-key alias |
+| `DCM_ANDROID_UPLOAD_KEY_PASSWORD` | Upload-key password |
+| `DCM_GOOGLE_PLAY_SERVICE_ACCOUNT_JSON` | Least-privileged Play publishing service-account credential |
+
+Set the non-secret `mobile-testing` environment variable
+`DCM_TESTFLIGHT_INTERNAL_GROUP` to the exact Divine Creative internal group
+name. Never copy any of these values into a Buzz agent definition, repository
+variable, workflow input, PR, issue, command transcript, or artifact.
+
+Dispatch through GitHub CLI only after the candidate tag exists and the next
+store build numbers are known:
+
+```bash
+gh workflow run dcm-mobile-internal-testing.yml \
+  --repo Divine-Creative-Ministries/buzz \
+  --ref dcm-production \
+  -f candidate_tag=dcm-mobile-vX.Y.Z-rc.N \
+  -f target_sha=FULL_40_CHARACTER_SHA \
+  -f version=X.Y.Z \
+  -f ios_build_number=NEXT_IOS_BUILD \
+  -f android_version_code=NEXT_ANDROID_CODE \
+  -f upload_ios=true \
+  -f upload_android=true
+```
+
+The workflow queries TestFlight and every standard Google Play track before
+building and rejects a reused build number or version code. Uploads use pinned
+fastlane `2.237.0`, TestFlight internal testing, and Google Play internal
+testing. The exact uploaded artifacts must still pass the real-device checklist
+before Bailey performs either production-promotion step.
+
 ## Signing and automation secrets
 
 Never commit any signing or publishing credential. Store these only in the
@@ -228,6 +288,11 @@ required test/private tracks. Keep API key files, service-account JSON, and
 upload keystores in protected CI secrets or an approved password manager. Do
 not commit Expo/EAS configuration: this client is Flutter, and store builds use
 Flutter/Xcode/Gradle unless the project adopts a separately reviewed migration.
+
+The Buzz Maintainer and Mobile Publisher agent definitions contain no
+environment variables. Their normal GitHub access comes from the Mac's existing
+authenticated GitHub connection; store and signing credentials are available
+only inside the protected `mobile-testing` workflow jobs.
 
 ## Required checks before production
 

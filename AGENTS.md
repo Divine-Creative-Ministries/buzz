@@ -72,6 +72,11 @@ releasing, or deploying, read
   requires an explicit operator decision. This is a Flutter app, so do not add
   Expo/EAS release commands or configuration unless a separately reviewed
   migration adopts Expo.
+- Keep every Buzz Maintainer and Mobile Publisher agent definition free of
+  environment variables and credentials. Store Apple, Google Play, Android
+  signing, and VPS secrets only in their documented protected GitHub
+  environments or an approved signing keychain/password manager; agents may
+  dispatch the protected workflow but must never receive or print those values.
 - Never commit credentials, `.env` contents, private keys, backup archives, or
   production data. A merge to `dcm-production` authorizes application image
   deployment only; it does not authorize unrelated infrastructure changes or

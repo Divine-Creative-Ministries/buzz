@@ -1,0 +1,436 @@
+name: DCM mobile internal testing
+run-name: DCM mobile ${{ inputs.candidate_tag }} to internal testing
+
+on:
+  workflow_dispatch:
+    inputs:
+      candidate_tag:
+        description: Immutable annotated tag (dcm-mobile-vX.Y.Z-rc.N)
+        required: true
+        type: string
+      target_sha:
+        description: Exact 40-character commit SHA named by the candidate tag
+        required: true
+        type: string
+      version:
+        description: Marketing version (X.Y.Z)
+        required: true
+        type: string
+      ios_build_number:
+        description: Next unused iOS build number (required when iOS is selected)
+        required: false
+        type: string
+      android_version_code:
+        description: Next unused Android version code (required when Android is selected)
+        required: false
+        type: string
+      upload_ios:
+        description: Build and upload to TestFlight internal testing
+        required: true
+        default: true
+        type: boolean
+      upload_android:
+        description: Build and upload to Google Play internal testing
+        required: true
+        default: true
+        type: boolean
+
+concurrency:
+  group: dcm-mobile-internal-${{ inputs.candidate_tag }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  FASTLANE_VERSION: 2.237.0
+  DCM_IOS_BUNDLE_ID: org.divinecreative.buzz
+  DCM_ANDROID_PACKAGE: org.divinecreative.buzz
+  DCM_APPLE_TEAM_ID: AG96733X49
+  DCM_RELAY_URL: https://buzz.divinecreative.org
+
+jobs:
+  validate:
+    name: Validate immutable candidate
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - name: Require the reviewed workflow from dcm-production
+        env:
+          DISPATCH_REF: ${{ github.ref }}
+          REPOSITORY: ${{ github.repository }}
+          UPLOAD_IOS: ${{ inputs.upload_ios }}
+          UPLOAD_ANDROID: ${{ inputs.upload_android }}
+          IOS_BUILD_NUMBER: ${{ inputs.ios_build_number }}
+          ANDROID_VERSION_CODE: ${{ inputs.android_version_code }}
+        run: |
+          set -euo pipefail
+          [[ "$REPOSITORY" == "Divine-Creative-Ministries/buzz" ]] || {
+            echo "::error::This workflow is restricted to Divine-Creative-Ministries/buzz"
+            exit 1
+          }
+          [[ "$DISPATCH_REF" == "refs/heads/dcm-production" ]] || {
+            echo "::error::Dispatch this workflow from dcm-production, not $DISPATCH_REF"
+            exit 1
+          }
+          if [[ "$UPLOAD_IOS" != "true" && "$UPLOAD_ANDROID" != "true" ]]; then
+            echo "::error::Select at least one internal-testing platform"
+            exit 1
+          fi
+          if [[ "$UPLOAD_IOS" == "true" && ! "$IOS_BUILD_NUMBER" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::ios_build_number must be a positive integer"
+            exit 1
+          fi
+          if [[ "$UPLOAD_ANDROID" == "true" && ! "$ANDROID_VERSION_CODE" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::android_version_code must be a positive integer"
+            exit 1
+          fi
+
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: ${{ inputs.candidate_tag }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Fetch the protected production branch
+        run: git fetch --no-tags origin +refs/heads/dcm-production:refs/remotes/origin/dcm-production
+
+      - name: Verify candidate provenance and DCM identity
+        run: scripts/verify-dcm-mobile-candidate.sh '${{ inputs.candidate_tag }}' '${{ inputs.target_sha }}' '${{ inputs.version }}'
+
+      - uses: cashapp/activate-hermit@cea9af7913204a965fd488637a8d1811bba2e616 # v1.1.4
+
+      - name: Install Flutter dependencies
+        run: cd mobile && flutter pub get
+
+      - name: Run mobile release checks
+        run: |
+          just mobile-check
+          just mobile-test
+
+      - name: Record validated source
+        run: |
+          {
+            echo "## DCM mobile candidate validated"
+            echo "- Tag: \`${{ inputs.candidate_tag }}\`"
+            echo "- SHA: \`${{ inputs.target_sha }}\`"
+            echo "- Version: \`${{ inputs.version }}\`"
+            echo "- Relay: \`$DCM_RELAY_URL\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  ios_internal:
+    name: TestFlight internal testing
+    if: ${{ inputs.upload_ios }}
+    needs: validate
+    runs-on: macos-15
+    timeout-minutes: 90
+    environment: mobile-testing
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: ${{ inputs.candidate_tag }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Fetch and reverify the exact candidate
+        run: |
+          git fetch --no-tags origin +refs/heads/dcm-production:refs/remotes/origin/dcm-production
+          scripts/verify-dcm-mobile-candidate.sh '${{ inputs.candidate_tag }}' '${{ inputs.target_sha }}' '${{ inputs.version }}'
+
+      - uses: cashapp/activate-hermit@cea9af7913204a965fd488637a8d1811bba2e616 # v1.1.4
+
+      - name: Install Flutter dependencies
+        run: cd mobile && flutter pub get
+
+      - name: Install pinned fastlane
+        run: |
+          set -euo pipefail
+          gem install --user-install fastlane -v "$FASTLANE_VERSION" --no-document
+          echo "$(ruby -e 'print Gem.user_dir')/bin" >> "$GITHUB_PATH"
+
+      - name: Materialize protected iOS credentials
+        id: ios_credentials
+        env:
+          IOS_CERTIFICATE_BASE64: ${{ secrets.DCM_IOS_DISTRIBUTION_CERTIFICATE_P12 }}
+          IOS_CERTIFICATE_PASSWORD: ${{ secrets.DCM_IOS_DISTRIBUTION_CERTIFICATE_PASSWORD }}
+          IOS_PROFILE_BASE64: ${{ secrets.DCM_IOS_PROVISIONING_PROFILE }}
+          ASC_KEY_ID: ${{ secrets.DCM_ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.DCM_ASC_ISSUER_ID }}
+          ASC_PRIVATE_KEY: ${{ secrets.DCM_ASC_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          for name in IOS_CERTIFICATE_BASE64 IOS_CERTIFICATE_PASSWORD IOS_PROFILE_BASE64 ASC_KEY_ID ASC_ISSUER_ID ASC_PRIVATE_KEY; do
+            [[ -n "${!name}" ]] || {
+              echo "::error::Required protected iOS credential $name is missing"
+              exit 1
+            }
+          done
+
+          certificate_path="$RUNNER_TEMP/dcm-ios-distribution.p12"
+          profile_path="$RUNNER_TEMP/dcm-ios.mobileprovision"
+          private_key_path="$RUNNER_TEMP/AuthKey_${ASC_KEY_ID}.p8"
+          keychain_path="$RUNNER_TEMP/dcm-signing.keychain-db"
+          keychain_password="$(openssl rand -hex 32)"
+
+          export CERTIFICATE_PATH="$certificate_path"
+          export PROFILE_PATH="$profile_path"
+          export PRIVATE_KEY_PATH="$private_key_path"
+          python3 - <<'PY'
+          import base64
+          import os
+          from pathlib import Path
+
+          for source, target in (
+              ("IOS_CERTIFICATE_BASE64", "CERTIFICATE_PATH"),
+              ("IOS_PROFILE_BASE64", "PROFILE_PATH"),
+          ):
+              Path(os.environ[target]).write_bytes(base64.b64decode(os.environ[source], validate=True))
+          Path(os.environ["PRIVATE_KEY_PATH"]).write_text(os.environ["ASC_PRIVATE_KEY"], encoding="utf-8")
+          PY
+          chmod 600 "$certificate_path" "$profile_path" "$private_key_path"
+
+          security create-keychain -p "$keychain_password" "$keychain_path"
+          security set-keychain-settings -lut 21600 "$keychain_path"
+          security unlock-keychain -p "$keychain_password" "$keychain_path"
+          security import "$certificate_path" -P "$IOS_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$keychain_path"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$keychain_password" "$keychain_path" >/dev/null
+          security list-keychains -d user -s \
+            "$keychain_path" "$HOME/Library/Keychains/login.keychain-db"
+
+          profile_plist="$RUNNER_TEMP/dcm-ios-profile.plist"
+          security cms -D -i "$profile_path" > "$profile_plist"
+          profile_uuid="$(/usr/libexec/PlistBuddy -c 'Print :UUID' "$profile_plist")"
+          profile_name="$(/usr/libexec/PlistBuddy -c 'Print :Name' "$profile_plist")"
+          profile_team="$(/usr/libexec/PlistBuddy -c 'Print :TeamIdentifier:0' "$profile_plist")"
+          profile_app_id="$(/usr/libexec/PlistBuddy -c 'Print :Entitlements:application-identifier' "$profile_plist")"
+          [[ "$profile_team" == "$DCM_APPLE_TEAM_ID" ]] || {
+            echo "::error::Provisioning profile belongs to the wrong Apple team"
+            exit 1
+          }
+          [[ "$profile_app_id" == "$DCM_APPLE_TEAM_ID.$DCM_IOS_BUNDLE_ID" ]] || {
+            echo "::error::Provisioning profile does not authorize $DCM_IOS_BUNDLE_ID"
+            exit 1
+          }
+
+          profiles_dir="$HOME/Library/MobileDevice/Provisioning Profiles"
+          mkdir -p "$profiles_dir"
+          installed_profile="$profiles_dir/$profile_uuid.mobileprovision"
+          cp "$profile_path" "$installed_profile"
+
+          export EXPORT_OPTIONS_PATH="$RUNNER_TEMP/ExportOptions.plist"
+          export PROFILE_NAME="$profile_name"
+          python3 - <<'PY'
+          import os
+          import plistlib
+          from pathlib import Path
+
+          options = {
+              "destination": "export",
+              "manageAppVersionAndBuildNumber": False,
+              "method": "app-store-connect",
+              "provisioningProfiles": {
+                  os.environ["DCM_IOS_BUNDLE_ID"]: os.environ["PROFILE_NAME"],
+              },
+              "signingCertificate": "Apple Distribution",
+              "signingStyle": "manual",
+              "stripSwiftSymbols": True,
+              "teamID": os.environ["DCM_APPLE_TEAM_ID"],
+              "uploadSymbols": True,
+          }
+          with Path(os.environ["EXPORT_OPTIONS_PATH"]).open("wb") as handle:
+              plistlib.dump(options, handle)
+          PY
+
+          {
+            echo "DCM_IOS_CERTIFICATE_PATH=$certificate_path"
+            echo "DCM_IOS_PROFILE_PATH=$installed_profile"
+            echo "DCM_IOS_PRIVATE_KEY_PATH=$private_key_path"
+            echo "DCM_IOS_KEYCHAIN_PATH=$keychain_path"
+            echo "DCM_IOS_EXPORT_OPTIONS=$EXPORT_OPTIONS_PATH"
+          } >> "$GITHUB_ENV"
+
+      - name: Require the next unused TestFlight build number
+        working-directory: mobile
+        env:
+          DCM_ASC_KEY_ID: ${{ secrets.DCM_ASC_KEY_ID }}
+          DCM_ASC_ISSUER_ID: ${{ secrets.DCM_ASC_ISSUER_ID }}
+          DCM_ASC_PRIVATE_KEY_PATH: ${{ env.DCM_IOS_PRIVATE_KEY_PATH }}
+          DCM_IOS_BUILD_NUMBER: ${{ inputs.ios_build_number }}
+          DCM_MOBILE_VERSION: ${{ inputs.version }}
+        run: fastlane ios verify_internal_build_number
+
+      - name: Build the signed DCM IPA
+        working-directory: mobile
+        run: |
+          set -euo pipefail
+          flutter build ipa --release --no-pub \
+            --build-name '${{ inputs.version }}' \
+            --build-number '${{ inputs.ios_build_number }}' \
+            --dart-define=BUZZ_RELAY_URL="$DCM_RELAY_URL" \
+            --export-options-plist="$DCM_IOS_EXPORT_OPTIONS"
+          ipa_path="$(find build/ios/ipa -maxdepth 1 -type f -name '*.ipa' -print -quit)"
+          [[ -n "$ipa_path" ]] || {
+            echo "::error::Flutter did not produce an IPA"
+            exit 1
+          }
+          ipa_path="$(cd "$(dirname "$ipa_path")" && pwd)/$(basename "$ipa_path")"
+          echo "DCM_IOS_IPA_PATH=$ipa_path" >> "$GITHUB_ENV"
+          ipa_sha="$(shasum -a 256 "$ipa_path" | awk '{print $1}')"
+          echo "DCM_IOS_IPA_SHA256=$ipa_sha" >> "$GITHUB_ENV"
+
+      - name: Upload to TestFlight internal testing
+        working-directory: mobile
+        env:
+          DCM_ASC_KEY_ID: ${{ secrets.DCM_ASC_KEY_ID }}
+          DCM_ASC_ISSUER_ID: ${{ secrets.DCM_ASC_ISSUER_ID }}
+          DCM_ASC_PRIVATE_KEY_PATH: ${{ env.DCM_IOS_PRIVATE_KEY_PATH }}
+          DCM_IOS_IPA_PATH: ${{ env.DCM_IOS_IPA_PATH }}
+          DCM_TESTFLIGHT_INTERNAL_GROUP: ${{ vars.DCM_TESTFLIGHT_INTERNAL_GROUP }}
+          DCM_TESTFLIGHT_CHANGELOG: DCM Buzz ${{ inputs.candidate_tag }} (${{ inputs.target_sha }})
+        run: fastlane ios internal
+
+      - name: Record TestFlight upload
+        run: |
+          {
+            echo "## TestFlight internal testing"
+            echo "- App: \`$DCM_IOS_BUNDLE_ID\`"
+            echo "- Candidate: \`${{ inputs.candidate_tag }}\`"
+            echo "- SHA: \`${{ inputs.target_sha }}\`"
+            echo "- Version/build: \`${{ inputs.version }} (${{ inputs.ios_build_number }})\`"
+            echo "- IPA SHA-256: \`$DCM_IOS_IPA_SHA256\`"
+            echo "- Lane: TestFlight internal testing only"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Remove temporary iOS credentials
+        if: ${{ always() }}
+        run: |
+          if [[ -n "${DCM_IOS_KEYCHAIN_PATH:-}" ]]; then
+            security delete-keychain "$DCM_IOS_KEYCHAIN_PATH" >/dev/null 2>&1 || true
+          fi
+          rm -f \
+            "${DCM_IOS_CERTIFICATE_PATH:-}" \
+            "${DCM_IOS_PROFILE_PATH:-}" \
+            "${DCM_IOS_PRIVATE_KEY_PATH:-}" \
+            "${DCM_IOS_EXPORT_OPTIONS:-}" \
+            "$RUNNER_TEMP/dcm-ios.mobileprovision" \
+            "$RUNNER_TEMP/dcm-ios-profile.plist"
+
+  android_internal:
+    name: Google Play internal testing
+    if: ${{ inputs.upload_android }}
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    environment: mobile-testing
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: ${{ inputs.candidate_tag }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Fetch and reverify the exact candidate
+        run: |
+          git fetch --no-tags origin +refs/heads/dcm-production:refs/remotes/origin/dcm-production
+          scripts/verify-dcm-mobile-candidate.sh '${{ inputs.candidate_tag }}' '${{ inputs.target_sha }}' '${{ inputs.version }}'
+
+      - uses: cashapp/activate-hermit@cea9af7913204a965fd488637a8d1811bba2e616 # v1.1.4
+
+      - name: Install Flutter dependencies
+        run: cd mobile && flutter pub get
+
+      - name: Install pinned fastlane
+        run: |
+          set -euo pipefail
+          gem install --user-install fastlane -v "$FASTLANE_VERSION" --no-document
+          echo "$(ruby -e 'print Gem.user_dir')/bin" >> "$GITHUB_PATH"
+
+      - name: Materialize protected Android credentials
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.DCM_ANDROID_UPLOAD_KEYSTORE }}
+          GOOGLE_PLAY_JSON: ${{ secrets.DCM_GOOGLE_PLAY_SERVICE_ACCOUNT_JSON }}
+        run: |
+          set -euo pipefail
+          [[ -n "$ANDROID_KEYSTORE_BASE64" ]] || {
+            echo "::error::DCM_ANDROID_UPLOAD_KEYSTORE is missing"
+            exit 1
+          }
+          [[ -n "$GOOGLE_PLAY_JSON" ]] || {
+            echo "::error::DCM_GOOGLE_PLAY_SERVICE_ACCOUNT_JSON is missing"
+            exit 1
+          }
+          export ANDROID_KEYSTORE_PATH="$RUNNER_TEMP/dcm-android-upload.jks"
+          export GOOGLE_PLAY_JSON_PATH="$RUNNER_TEMP/dcm-google-play.json"
+          python3 - <<'PY'
+          import base64
+          import json
+          import os
+          from pathlib import Path
+
+          Path(os.environ["ANDROID_KEYSTORE_PATH"]).write_bytes(
+              base64.b64decode(os.environ["ANDROID_KEYSTORE_BASE64"], validate=True)
+          )
+          google_credentials = json.loads(os.environ["GOOGLE_PLAY_JSON"])
+          Path(os.environ["GOOGLE_PLAY_JSON_PATH"]).write_text(
+              json.dumps(google_credentials), encoding="utf-8"
+          )
+          PY
+          chmod 600 "$ANDROID_KEYSTORE_PATH" "$GOOGLE_PLAY_JSON_PATH"
+          {
+            echo "DCM_ANDROID_KEYSTORE_PATH=$ANDROID_KEYSTORE_PATH"
+            echo "DCM_GOOGLE_PLAY_JSON_PATH=$GOOGLE_PLAY_JSON_PATH"
+          } >> "$GITHUB_ENV"
+
+      - name: Require the next unused Google Play version code
+        working-directory: mobile
+        env:
+          DCM_ANDROID_VERSION_CODE: ${{ inputs.android_version_code }}
+          DCM_GOOGLE_PLAY_JSON_PATH: ${{ env.DCM_GOOGLE_PLAY_JSON_PATH }}
+        run: fastlane android verify_internal_version_code
+
+      - name: Build the signed DCM AAB
+        working-directory: mobile
+        env:
+          BUZZ_ANDROID_UPLOAD_KEYSTORE_PATH: ${{ env.DCM_ANDROID_KEYSTORE_PATH }}
+          BUZZ_ANDROID_UPLOAD_KEYSTORE_PASSWORD: ${{ secrets.DCM_ANDROID_UPLOAD_KEYSTORE_PASSWORD }}
+          BUZZ_ANDROID_UPLOAD_KEY_ALIAS: ${{ secrets.DCM_ANDROID_UPLOAD_KEY_ALIAS }}
+          BUZZ_ANDROID_UPLOAD_KEY_PASSWORD: ${{ secrets.DCM_ANDROID_UPLOAD_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          flutter build appbundle --release --no-pub \
+            --build-name '${{ inputs.version }}' \
+            --build-number '${{ inputs.android_version_code }}' \
+            --dart-define=BUZZ_RELAY_URL="$DCM_RELAY_URL"
+          aab_path="$(find build/app/outputs/bundle/release -maxdepth 1 -type f -name '*.aab' -print -quit)"
+          [[ -n "$aab_path" ]] || {
+            echo "::error::Flutter did not produce an AAB"
+            exit 1
+          }
+          jarsigner -verify "$aab_path" >/dev/null
+          aab_path="$(cd "$(dirname "$aab_path")" && pwd)/$(basename "$aab_path")"
+          echo "DCM_ANDROID_AAB_PATH=$aab_path" >> "$GITHUB_ENV"
+          aab_sha="$(sha256sum "$aab_path" | awk '{print $1}')"
+          echo "DCM_ANDROID_AAB_SHA256=$aab_sha" >> "$GITHUB_ENV"
+
+      - name: Upload to Google Play internal testing
+        working-directory: mobile
+        env:
+          DCM_ANDROID_AAB_PATH: ${{ env.DCM_ANDROID_AAB_PATH }}
+          DCM_GOOGLE_PLAY_JSON_PATH: ${{ env.DCM_GOOGLE_PLAY_JSON_PATH }}
+        run: fastlane android internal
+
+      - name: Record Google Play upload
+        run: |
+          {
+            echo "## Google Play internal testing"
+            echo "- App: \`$DCM_ANDROID_PACKAGE\`"
+            echo "- Candidate: \`${{ inputs.candidate_tag }}\`"
+            echo "- SHA: \`${{ inputs.target_sha }}\`"
+            echo "- Version/code: \`${{ inputs.version }} (${{ inputs.android_version_code }})\`"
+            echo "- AAB SHA-256: \`$DCM_ANDROID_AAB_SHA256\`"
+            echo "- Lane: Google Play internal testing only"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Remove temporary Android credentials
+        if: ${{ always() }}
+        run: rm -f "${DCM_ANDROID_KEYSTORE_PATH:-}" "${DCM_GOOGLE_PLAY_JSON_PATH:-}"

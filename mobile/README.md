@@ -73,6 +73,12 @@ an explicitly approved promotion to the Private Custom App and Managed Google
 Play private production channels. A merge to `dcm-production` does not publish
 either mobile app.
 
+The protected test-lane upload is
+`.github/workflows/dcm-mobile-internal-testing.yml`. Dispatch it only from
+`dcm-production` for an existing annotated `dcm-mobile-vX.Y.Z-rc.N` tag and its
+exact SHA. Its credentials live in the GitHub `mobile-testing` environment;
+Buzz agents have no mobile signing or store environment variables.
+
 ## Android release signing
 
 Android release builds fail unless all upload-key inputs are supplied through the
