@@ -99,6 +99,7 @@ class _MessageBubble extends ConsumerWidget {
             message: message,
             channelId: currentChannelId,
             canManageMessage: canManageMessage,
+            messageAuthor: displayName,
             allMessages: allMessages,
             currentPubkey: currentPubkey,
             isMember: isMember,

@@ -11,6 +11,9 @@ export default defineConfig({
   ],
   use: {
     baseURL: "http://127.0.0.1:4173",
+    launchOptions: process.env.PLAYWRIGHT_CHROME_EXECUTABLE
+      ? { executablePath: process.env.PLAYWRIGHT_CHROME_EXECUTABLE }
+      : undefined,
     screenshot: "only-on-failure",
     trace: "on-first-retry",
     video: "retain-on-failure",
@@ -35,6 +38,7 @@ export default defineConfig({
         "**/invites-settings-screenshots.spec.ts",
         "**/messaging.spec.ts",
         "**/message-feedback-snapshots.spec.ts",
+        "**/message-read-aloud-screenshots.spec.ts",
         "**/custom-emoji.spec.ts",
         "**/profile-custom-emoji-status.spec.ts",
         "**/custom-emoji-ui.spec.ts",

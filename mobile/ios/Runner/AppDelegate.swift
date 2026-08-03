@@ -4,11 +4,17 @@ import UIKit
 import UserNotifications
 
 @main
-@objc class AppDelegate: FlutterAppDelegate, FlutterImplicitEngineDelegate {
+@objc class AppDelegate: FlutterAppDelegate, FlutterImplicitEngineDelegate,
+  AVSpeechSynthesizerDelegate
+{
   private var mediaUploadChannel: FlutterMethodChannel?
   private var qrScannerChannel: FlutterMethodChannel?
   private var inlinePhotoPickerSupportChannel: FlutterMethodChannel?
   private var nativeAttachmentPopoverCoordinator: NativeAttachmentPopoverCoordinator?
+  private var messageReadAloudChannel: FlutterMethodChannel?
+  private let messageSpeechSynthesizer = AVSpeechSynthesizer()
+  private var speakingMessageId: String?
+  private var speakingUtterance: AVSpeechUtterance?
 
   override func application(
     _ application: UIApplication,
@@ -50,6 +56,14 @@ import UserNotifications
         result(false)
       }
     }
+    messageReadAloudChannel = FlutterMethodChannel(
+      name: "buzz/message_read_aloud",
+      binaryMessenger: messenger
+    )
+    messageSpeechSynthesizer.delegate = self
+    messageReadAloudChannel?.setMethodCallHandler { [weak self] call, result in
+      self?.handleMessageReadAloudMethodCall(call, result: result)
+    }
 
     if let inlinePhotoPickerRegistrar = engineBridge.pluginRegistry.registrar(
       forPlugin: "BuzzInlinePhotoPicker"
@@ -70,6 +84,98 @@ import UserNotifications
       messenger: messenger,
       parentViewController: nativeAttachmentRegistrar?.viewController
     )
+  }
+
+  private func handleMessageReadAloudMethodCall(
+    _ call: FlutterMethodCall,
+    result: @escaping FlutterResult
+  ) {
+    switch call.method {
+    case "speak":
+      guard
+        let arguments = call.arguments as? [String: Any],
+        let messageId = arguments["messageId"] as? String,
+        let author = arguments["author"] as? String,
+        let text = arguments["text"] as? String,
+        !text.isEmpty
+      else {
+        result(
+          FlutterError(
+            code: "invalid_arguments",
+            message: "Expected a message id, author, and non-empty text.",
+            details: nil
+          )
+        )
+        return
+      }
+
+      if messageSpeechSynthesizer.isSpeaking || messageSpeechSynthesizer.isPaused {
+        speakingMessageId = nil
+        speakingUtterance = nil
+        messageSpeechSynthesizer.stopSpeaking(at: .immediate)
+      }
+      do {
+        let audioSession = AVAudioSession.sharedInstance()
+        try audioSession.setCategory(
+          .playback,
+          mode: .spokenAudio,
+          options: [.duckOthers]
+        )
+        try audioSession.setActive(true)
+      } catch {
+        result(
+          FlutterError(
+            code: "audio_session_failed",
+            message: "Unable to start message audio.",
+            details: error.localizedDescription
+          )
+        )
+        return
+      }
+      let utterance = AVSpeechUtterance(string: text)
+      utterance.rate = AVSpeechUtteranceDefaultSpeechRate
+      speakingMessageId = messageId
+      speakingUtterance = utterance
+      messageSpeechSynthesizer.speak(utterance)
+      UIAccessibility.post(
+        notification: .announcement,
+        argument: "Reading message from \(author)"
+      )
+      result(nil)
+    case "pause":
+      result(messageSpeechSynthesizer.pauseSpeaking(at: .word))
+    case "resume":
+      result(messageSpeechSynthesizer.continueSpeaking())
+    case "stop":
+      speakingMessageId = nil
+      speakingUtterance = nil
+      if messageSpeechSynthesizer.isSpeaking || messageSpeechSynthesizer.isPaused {
+        messageSpeechSynthesizer.stopSpeaking(at: .immediate)
+      }
+      try? AVAudioSession.sharedInstance().setActive(
+        false,
+        options: [.notifyOthersOnDeactivation]
+      )
+      result(nil)
+    default:
+      result(FlutterMethodNotImplemented)
+    }
+  }
+
+  func speechSynthesizer(
+    _ synthesizer: AVSpeechSynthesizer,
+    didFinish utterance: AVSpeechUtterance
+  ) {
+    guard speakingUtterance === utterance, let messageId = speakingMessageId else {
+      return
+    }
+    speakingMessageId = nil
+    speakingUtterance = nil
+    try? AVAudioSession.sharedInstance().setActive(
+      false,
+      options: [.notifyOthersOnDeactivation]
+    )
+    messageReadAloudChannel?.invokeMethod("finished", arguments: messageId)
   }
 
   private static func handleQrScannerMethodCall(
