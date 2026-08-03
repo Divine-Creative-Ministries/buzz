@@ -105,7 +105,11 @@ change needed.
 
 - The workflow runs only on `Divine-Creative-Ministries/buzz` and only for
   tags whose commit is an ancestor of `dcm-production` — release binaries
-  can only be built from reviewed history.
+  can only be built from reviewed history. The publish job re-checks that
+  the tag still points at the SHA the artifacts were built from, so a tag
+  moved mid-run cannot relabel binaries. Recommended hardening: add a
+  repository ruleset protecting `refs/tags/dcm-desktop-v*` from update and
+  deletion.
 - All third-party actions are SHA-pinned and the Linux container image,
   appimagetool, and AppImage runtime are digest/hash-pinned (inherited from
   the upstream lane).
