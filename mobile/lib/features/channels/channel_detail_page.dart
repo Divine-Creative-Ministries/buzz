@@ -40,6 +40,8 @@ import 'manage_channel_sheet.dart';
 import 'members_sheet.dart';
 import 'message_actions.dart';
 import 'message_content.dart';
+import 'message_read_aloud.dart';
+import 'message_read_aloud_bar.dart';
 import 'read_state/deferred_read_state_update.dart';
 import 'read_state/read_state_provider.dart';
 import 'read_state/read_state_time.dart';
@@ -193,6 +195,13 @@ class ChannelDetailPage extends HookConsumerWidget {
       _preloadMembers(ref, channel.id);
       return null;
     }, [channel.id]);
+
+    final readAloudNotifier = ref.read(messageReadAloudProvider.notifier);
+    useEffect(
+      () =>
+          () => readAloudNotifier.stop(),
+      [channel.id, readAloudNotifier],
+    );
 
     useEffect(() {
       final messageId = initialMessageId;
@@ -381,6 +390,7 @@ class ChannelDetailPage extends HookConsumerWidget {
                   ? const SizedBox.shrink()
                   : ChannelTypingIndicator(entries: typingEntries),
             ),
+          const MessageReadAloudBar(),
           if (!resolvedChannel.isForum &&
               resolvedChannel.isMember &&
               !resolvedChannel.isArchived)

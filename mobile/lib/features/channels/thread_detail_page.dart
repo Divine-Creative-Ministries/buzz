@@ -25,6 +25,8 @@ import 'day_divider.dart';
 import '../profile/user_profile_sheet.dart';
 import 'message_actions.dart';
 import 'message_content.dart';
+import 'message_read_aloud.dart';
+import 'message_read_aloud_bar.dart';
 import 'reaction_row.dart';
 import 'read_state/read_state_format.dart';
 import 'read_state/read_state_provider.dart';
@@ -66,6 +68,12 @@ class ThreadDetailPage extends HookConsumerWidget {
       threadRepliesWithLocalProvider(
         ThreadRepliesArgs(channelId: channelId, rootId: queryRootId),
       ),
+    );
+    final readAloudNotifier = ref.read(messageReadAloudProvider.notifier);
+    useEffect(
+      () =>
+          () => readAloudNotifier.stop(),
+      [channelId, threadHead.id, readAloudNotifier],
     );
     // The thread query is one-shot and asks only for content kinds, so a
     // reaction, edit, or deletion that lands while the thread is open never
@@ -390,6 +398,7 @@ class ThreadDetailPage extends HookConsumerWidget {
                 ? const SizedBox.shrink()
                 : ChannelTypingIndicator(entries: threadTyping),
           ),
+          const MessageReadAloudBar(),
           if (isMember && !isArchived)
             ComposeBar(
               channelId: channelId,
@@ -660,6 +669,7 @@ class _ThreadMessage extends ConsumerWidget {
               message: message,
               channelId: channelId,
               canManageMessage: canManageMessage,
+              messageAuthor: displayName,
               allMessages: allMessages,
               currentPubkey: currentPubkey,
               isMember: isMember,
