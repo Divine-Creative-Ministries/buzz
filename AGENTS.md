@@ -72,17 +72,27 @@ releasing, or deploying, read
   requires an explicit operator decision. This is a Flutter app, so do not add
   Expo/EAS release commands or configuration unless a separately reviewed
   migration adopts Expo.
-- Keep every Buzz Maintainer and Mobile Publisher agent definition free of
-  environment variables and credentials. Store Apple, Google Play, Android
-  signing, and VPS secrets only in their documented protected GitHub
-  environments or an approved signing keychain/password manager; agents may
-  dispatch the protected workflow but must never receive or print those values.
+- Keep every Buzz Maintainer and Publisher agent definition free of environment
+  variables and credentials. Apple, Google Play, Android signing, and desktop
+  notarization credentials live only in the private
+  `Divine-Creative-Ministries/buzz-dcm-publish` repository's protected GitHub
+  environments or an approved signing keychain/password manager. This public
+  fork must have no store or signing secrets. Agents may dispatch the private
+  workflows after explicit approval but must never receive or print secret
+  values.
 - The protected mobile publisher identities, exact TestFlight group, Android
   upload-key alias, Google Cloud project, Play service-account address, and
   least-privilege Play permissions are recorded in
   [docs/DCM_MOBILE_RELEASE.md](docs/DCM_MOBILE_RELEASE.md). Treat that document
-  as the source of truth; do not create replacement store credentials or widen
-  permissions merely because a local credential is unavailable.
+  as the source of truth; the private publisher's `docs/PUBLISHING.md` is the
+  operational source of truth for workflow inputs and secret names. Do not
+  create replacement store credentials or widen permissions merely because a
+  local credential is unavailable.
+- Desktop, iOS, and Android builds are signed or published only by the private
+  `buzz-dcm-publish` repository. Do not add credentialed publishing workflows,
+  store secrets, Developer ID material, or private release artifacts to this
+  public source fork. The public fork supplies an immutable signed `dcm-v*` tag
+  and exact SHA; the private publisher fetches that source ephemerally.
 - Never commit credentials, `.env` contents, private keys, backup archives, or
   production data. A merge to `dcm-production` authorizes application image
   deployment only; it does not authorize unrelated infrastructure changes or

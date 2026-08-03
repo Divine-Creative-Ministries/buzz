@@ -104,8 +104,8 @@ and an explicit promotion decision.
 The upstream `scripts/mobile-release.sh` is intentionally restricted to
 `block/buzz:main`; agents must not weaken that guard or use its upstream
 `mobile-v*` tags for a DCM release. DCM candidates originate from
-`origin/dcm-production` and use annotated tags of the form
-`dcm-mobile-vX.Y.Z-rc.N`. Creating a candidate tag, uploading a test build, and
+`origin/dcm-production` and use signed annotated tags of the form
+`dcm-vX.Y.Z` or `dcm-vX.Y.Z-rc.N`. Creating a candidate tag, uploading a test build, and
 promoting to production are separate auditable actions.
 
 ### 1. Cut one immutable DCM candidate
@@ -113,8 +113,9 @@ promoting to production are separate auditable actions.
 1. Fetch `origin` and `upstream` and verify that the intended commit is present
    on `origin/dcm-production`.
 2. Require a clean worktree and a green PR/branch check for that commit.
-3. Create and push an annotated `dcm-mobile-vX.Y.Z-rc.N` tag at that exact
-   commit. Never move or reuse a candidate tag.
+3. Create, sign, and push an annotated `dcm-vX.Y.Z[-suffix]` tag at that exact
+   commit. The private publisher accepts only GitHub-verified tags and exact
+   SHAs that belong to `dcm-production`. Never move or reuse a release tag.
 4. Record the tag, complete commit SHA, marketing version, next unused iOS
    build number, and next unused Android version code before building.
 
@@ -124,7 +125,7 @@ Build both platforms from a clean checkout of the candidate tag. The release
 fallback relay must be the production HTTPS origin:
 
 ```bash
-git switch --detach dcm-mobile-vX.Y.Z-rc.N
+git switch --detach dcm-vX.Y.Z-rc.N
 test -z "$(git status --porcelain)"
 
 just mobile-check
@@ -219,24 +220,26 @@ builds, uploads to the two test lanes, and status reporting. Production
 promotion must remain an explicit manual or protected-environment approval
 until a separately reviewed policy says otherwise.
 
-## Protected internal-testing workflow
+## Private protected publisher
 
-`.github/workflows/dcm-mobile-internal-testing.yml` is the only automated DCM
-store-upload entry point. It is manually dispatched from `dcm-production` and
-accepts an existing immutable candidate tag, its complete commit SHA, the
-marketing version, and the next unused platform build numbers. It never creates
-or moves a tag, merges code, deploys the VPS, submits to App Review, or promotes
-a Google Play release beyond internal testing.
+`Divine-Creative-Ministries/buzz-dcm-publish` is the only automated DCM
+store-upload and desktop-release boundary. It is a private, source-free
+repository: its manually dispatched workflows fetch the requested immutable
+source from this public fork into an ephemeral GitHub-hosted runner. This
+public repository must not contain store/signing secrets or a credentialed DCM
+publishing workflow.
 
-The workflow first validates and tests the candidate without credentials. Its
-iOS and Android signing jobs then use the protected GitHub environment
-`mobile-testing`. Both jobs reverify the exact tag and SHA before the
-environment is entered. They record artifact hashes and store-upload status in
-the GitHub Actions summary and delete runner-local credential files even when a
-job fails.
+The private `publish-mobile.yml` workflow accepts the signed `dcm-v*` tag, its
+exact 40-character SHA in `confirm_sha`, the marketing version, and the next
+unused platform build numbers. Its first job is secret-free and verifies the
+owner dispatcher (`Realmullens`), the typed SHA, GitHub tag verification, the
+tag's membership in `dcm-production`, DCM app identity, and mobile tests. Only
+then may its iOS and Android jobs enter the separate `dcm-ios` and
+`dcm-android` environments. It never creates or moves a source tag, merges
+code, deploys the VPS, submits to App Review, or promotes a Google Play release
+beyond internal testing.
 
-Configure `mobile-testing` to allow only `dcm-production`. It owns these
-secrets:
+The private `dcm-ios` environment owns these secrets:
 
 | Secret | Purpose |
 | --- | --- |
@@ -246,26 +249,34 @@ secrets:
 | `DCM_IOS_DISTRIBUTION_CERTIFICATE_P12` | Base64-encoded Apple Distribution certificate and private key |
 | `DCM_IOS_DISTRIBUTION_CERTIFICATE_PASSWORD` | Password protecting the `.p12` file |
 | `DCM_IOS_PROVISIONING_PROFILE` | Base64-encoded App Store provisioning profile for `org.divinecreative.buzz` |
+
+Set the non-secret `dcm-ios` environment variable
+`DCM_TESTFLIGHT_INTERNAL_GROUP` to the exact Divine Creative internal group
+name.
+
+The private `dcm-android` environment owns:
+
+| Secret | Purpose |
+| --- | --- |
 | `DCM_ANDROID_UPLOAD_KEYSTORE` | Base64-encoded Google Play upload keystore |
 | `DCM_ANDROID_UPLOAD_KEYSTORE_PASSWORD` | Upload-keystore password |
 | `DCM_ANDROID_UPLOAD_KEY_ALIAS` | Upload-key alias |
 | `DCM_ANDROID_UPLOAD_KEY_PASSWORD` | Upload-key password |
 | `DCM_GOOGLE_PLAY_SERVICE_ACCOUNT_JSON` | Least-privileged Play publishing service-account credential |
 
-Set the non-secret `mobile-testing` environment variable
-`DCM_TESTFLIGHT_INTERNAL_GROUP` to the exact Divine Creative internal group
-name. Never copy any of these values into a Buzz agent definition, repository
-variable, workflow input, PR, issue, command transcript, or artifact.
+Never copy any credential value into a Buzz agent definition, this public
+repository, a repository variable, workflow input, PR, issue, command
+transcript, or artifact.
 
 Dispatch through GitHub CLI only after the candidate tag exists and the next
 store build numbers are known:
 
 ```bash
-gh workflow run dcm-mobile-internal-testing.yml \
-  --repo Divine-Creative-Ministries/buzz \
-  --ref dcm-production \
-  -f candidate_tag=dcm-mobile-vX.Y.Z-rc.N \
-  -f target_sha=FULL_40_CHARACTER_SHA \
+gh workflow run publish-mobile.yml \
+  --repo Divine-Creative-Ministries/buzz-dcm-publish \
+  --ref main \
+  -f source_ref=dcm-vX.Y.Z-rc.N \
+  -f confirm_sha=FULL_40_CHARACTER_SHA \
   -f version=X.Y.Z \
   -f ios_build_number=NEXT_IOS_BUILD \
   -f android_version_code=NEXT_ANDROID_CODE \
@@ -310,9 +321,10 @@ repository or an agent prompt:
 - `DCM Buzz Android Upload Key Alias`
 - `DCM Buzz Google Play Service Account JSON`
 
-GitHub Actions receives the matching values only through the protected
-`mobile-testing` environment. Do not export Keychain values into either Buzz
-agent definition or a long-lived shell environment.
+GitHub Actions receives the matching values only through the private
+publisher's protected `dcm-ios` and `dcm-android` environments. Do not export
+Keychain values into either Buzz agent definition or a long-lived shell
+environment.
 
 Prefer an App Store Connect API key scoped no wider than App Manager for iOS
 automation and a Google Play service account limited to DCM Buzz and the
@@ -324,7 +336,7 @@ Flutter/Xcode/Gradle unless the project adopts a separately reviewed migration.
 The Buzz Maintainer and Mobile Publisher agent definitions contain no
 environment variables. Their normal GitHub access comes from the Mac's existing
 authenticated GitHub connection; store and signing credentials are available
-only inside the protected `mobile-testing` workflow jobs.
+only inside the private publisher's protected workflow jobs.
 
 ## Required checks before production
 

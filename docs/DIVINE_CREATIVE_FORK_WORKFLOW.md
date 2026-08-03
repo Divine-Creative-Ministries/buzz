@@ -9,6 +9,7 @@ Buzz fork without losing local work when the upstream project changes.
 | --- | --- |
 | `block/buzz` (`upstream`) | Official Buzz source and destination for generally useful contributions |
 | `Divine-Creative-Ministries/buzz` (`origin`) | Divine Creative fork |
+| `Divine-Creative-Ministries/buzz-dcm-publish` | Private, source-free mobile and desktop signing/publishing automation |
 | `main` | Exact, fast-forward-only mirror of `upstream/main`; no Divine Creative commits |
 | `dcm-production` | Long-lived integration branch for reviewed Divine Creative changes |
 | `agent/*` | Short-lived implementation or upstream-sync branches targeting `dcm-production` |
@@ -191,6 +192,15 @@ backup, health-check, and rollback contract is defined in
 
 Secrets, private keys, `.env` contents, backup archives, and production data
 must never be committed to Git or attached to a public pull request.
+
+Mobile and desktop publication is deliberately separate from the VPS deploy.
+After a reviewed production commit is ready for client release, create a signed
+annotated `dcm-vX.Y.Z[-suffix]` tag at that exact commit. The private
+`buzz-dcm-publish` repository fetches that public source ephemerally, verifies
+the GitHub signature and ancestry in `dcm-production`, and publishes only after
+an explicit owner dispatch that repeats the exact source SHA. Signing and store
+credentials live only in that private repository's platform environments;
+agents and this public fork never receive their values.
 
 ## Conflict and Recovery Rules
 
