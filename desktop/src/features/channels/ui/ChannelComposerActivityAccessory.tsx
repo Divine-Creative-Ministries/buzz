@@ -4,6 +4,7 @@ import { CardMintComposerChip } from "@/features/agents/ui/CardMintComposerChip"
 import { useCardMintJobs } from "@/features/agents/cardMintStore";
 import { BotActivityComposerAction } from "@/features/channels/ui/BotActivityBar";
 import { ComposerActivityAccessory } from "@/features/messages/ui/ComposerActivityAccessory";
+import { MessageReadAloudBar } from "@/features/messages/ui/MessageReadAloudBar";
 import { TypingIndicatorRow } from "@/features/messages/ui/TypingIndicatorRow";
 
 type ChannelComposerActivityAccessoryProps = {
@@ -35,36 +36,41 @@ export function ChannelComposerActivityAccessory({
 }: ChannelComposerActivityAccessoryProps) {
   const cardMintJobs = useCardMintJobs();
   return (
-    <ComposerActivityAccessory
-      className="px-5"
-      testId="channel-composer-activity-row"
-      visible={visible}
-    >
-      <div className="flex w-full items-center gap-2 overflow-visible pl-2">
-        {cardMintJobs.length > 0 ? <CardMintComposerChip /> : null}
-        {workingBotPubkeys.length > 0 ? (
-          <div className="flex min-w-0 flex-1 overflow-visible">
-            <BotActivityComposerAction
-              agents={agents}
-              channelId={channel?.id ?? null}
-              onOpenAgentSession={onOpenAgentSession}
-              openAgentSessionPubkey={openAgentSessionPubkey}
-              profiles={profiles}
-              workingBotPubkeys={workingBotPubkeys}
-              variant="inline"
-            />
-          </div>
-        ) : null}
-        {typingPubkeys.length > 0 ? (
-          <TypingIndicatorRow
-            channel={channel}
-            className="min-w-0 flex-1 py-0 pl-[calc(0.75rem+1px)] pr-0 sm:pl-[calc(1rem+1px)]"
-            currentPubkey={currentPubkey}
-            profiles={profiles}
-            typingPubkeys={typingPubkeys}
-          />
-        ) : null}
+    <>
+      <div className="pointer-events-auto absolute inset-x-0 bottom-full">
+        <MessageReadAloudBar />
       </div>
-    </ComposerActivityAccessory>
+      <ComposerActivityAccessory
+        className="px-5"
+        testId="channel-composer-activity-row"
+        visible={visible}
+      >
+        <div className="flex w-full items-center gap-2 overflow-visible pl-2">
+          {cardMintJobs.length > 0 ? <CardMintComposerChip /> : null}
+          {workingBotPubkeys.length > 0 ? (
+            <div className="flex min-w-0 flex-1 overflow-visible">
+              <BotActivityComposerAction
+                agents={agents}
+                channelId={channel?.id ?? null}
+                onOpenAgentSession={onOpenAgentSession}
+                openAgentSessionPubkey={openAgentSessionPubkey}
+                profiles={profiles}
+                workingBotPubkeys={workingBotPubkeys}
+                variant="inline"
+              />
+            </div>
+          ) : null}
+          {typingPubkeys.length > 0 ? (
+            <TypingIndicatorRow
+              channel={channel}
+              className="min-w-0 flex-1 py-0 pl-[calc(0.75rem+1px)] pr-0 sm:pl-[calc(1rem+1px)]"
+              currentPubkey={currentPubkey}
+              profiles={profiles}
+              typingPubkeys={typingPubkeys}
+            />
+          ) : null}
+        </div>
+      </ComposerActivityAccessory>
+    </>
   );
 }

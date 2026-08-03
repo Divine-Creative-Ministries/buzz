@@ -22,6 +22,7 @@ import '../../shared/reminders/remind_me_later_sheet.dart';
 import '../../shared/reminders/reminder_service.dart';
 import 'channel_management_provider.dart';
 import 'emoji_picker.dart';
+import 'message_read_aloud.dart';
 import 'reaction_row.dart';
 import 'recent_emoji_provider.dart';
 import 'read_state/message_read_state.dart';
@@ -41,6 +42,7 @@ void showMessageActions({
   required TimelineMessage message,
   required String channelId,
   required bool canManageMessage,
+  String? messageAuthor,
   List<TimelineMessage>? allMessages,
   String? currentPubkey,
   bool isMember = false,
@@ -50,97 +52,152 @@ void showMessageActions({
     context: context,
     isScrollControlled: true,
     showDragHandle: true,
-    builder: (sheetContext) => SafeArea(
-      child: ConstrainedBox(
-        constraints: BoxConstraints(
-          maxHeight: MediaQuery.sizeOf(sheetContext).height * 0.7,
-        ),
-        child: SingleChildScrollView(
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(
-              Grid.gutter,
-              0,
-              Grid.gutter,
-              Grid.xs,
+    builder: (sheetContext) => Consumer(
+      builder: (sheetContext, sheetRef, _) {
+        final playback = sheetRef.watch(messageReadAloudProvider);
+        final isThisMessage = playback.messageId == message.id;
+        final listenLabel = isThisMessage
+            ? switch (playback.status) {
+                MessageReadAloudStatus.preparing => 'Preparing audio…',
+                MessageReadAloudStatus.playing => 'Pause reading',
+                MessageReadAloudStatus.paused => 'Resume reading',
+                MessageReadAloudStatus.finished => 'Replay message',
+                _ => 'Listen to message',
+              }
+            : 'Listen to message';
+        return SafeArea(
+          child: ConstrainedBox(
+            constraints: BoxConstraints(
+              maxHeight: MediaQuery.sizeOf(sheetContext).height * 0.7,
             ),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                _QuickReactionRow(
-                  message: message,
-                  sheetContext: sheetContext,
-                  pageContext: context,
-                  pageRef: ref,
+            child: SingleChildScrollView(
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(
+                  Grid.gutter,
+                  0,
+                  Grid.gutter,
+                  Grid.xs,
                 ),
-                const SizedBox(height: Grid.xs),
-                if (!message.isSystem) ...[
-                  // Fast actions: respond now, hand off context, defer.
-                  _FastActionsRow(
-                    message: message,
-                    channelId: channelId,
-                    allMessages: allMessages,
-                    currentPubkey: currentPubkey,
-                    isMember: isMember,
-                    isArchived: isArchived,
-                    pageContext: context,
-                  ),
-                  const SizedBox(height: Grid.xs),
-                  // Triage: come back to this message later.
-                  _MarkReadUnreadTile(message: message, channelId: channelId),
-                  _FollowThreadTile(message: message),
-                  const SheetDivider(),
-                  // Export: take the content out of the conversation.
-                  ListTile(
-                    leading: const Icon(LucideIcons.copy),
-                    title: const Text('Copy text'),
-                    onTap: () {
-                      Navigator.of(sheetContext).pop();
-                      // Copy to clipboard
-                      final data = ClipboardData(text: message.content);
-                      Clipboard.setData(data);
-                    },
-                  ),
-                ],
-                if (canManageMessage) ...[
-                  if (!message.isSystem) const SheetDivider(),
-                  ListTile(
-                    leading: const Icon(LucideIcons.pencil),
-                    title: const Text('Edit message'),
-                    onTap: () {
-                      Navigator.of(sheetContext).pop();
-                      _showEditSheet(
-                        context: context,
-                        ref: ref,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    _QuickReactionRow(
+                      message: message,
+                      sheetContext: sheetContext,
+                      pageContext: context,
+                      pageRef: ref,
+                    ),
+                    const SizedBox(height: Grid.xs),
+                    if (!message.isSystem) ...[
+                      // Fast actions: respond now, hand off context, defer.
+                      _FastActionsRow(
                         message: message,
                         channelId: channelId,
-                      );
-                    },
-                  ),
-                  ListTile(
-                    leading: Icon(
-                      LucideIcons.trash2,
-                      color: sheetContext.colors.error,
-                    ),
-                    title: Text(
-                      'Delete message',
-                      style: TextStyle(color: sheetContext.colors.error),
-                    ),
-                    onTap: () {
-                      Navigator.of(sheetContext).pop();
-                      _confirmDelete(
-                        context: context,
-                        ref: ref,
+                        allMessages: allMessages,
+                        currentPubkey: currentPubkey,
+                        isMember: isMember,
+                        isArchived: isArchived,
+                        pageContext: context,
+                      ),
+                      const SizedBox(height: Grid.xs),
+                      if (defaultTargetPlatform == TargetPlatform.iOS &&
+                          message.content.trim().isNotEmpty)
+                        ListTile(
+                          leading: Icon(
+                            isThisMessage &&
+                                    playback.status ==
+                                        MessageReadAloudStatus.playing
+                                ? LucideIcons.pause
+                                : isThisMessage &&
+                                      playback.status ==
+                                          MessageReadAloudStatus.paused
+                                ? LucideIcons.play
+                                : isThisMessage &&
+                                      playback.status ==
+                                          MessageReadAloudStatus.finished
+                                ? LucideIcons.rotateCcw
+                                : LucideIcons.volume2,
+                          ),
+                          title: Text(listenLabel),
+                          onTap:
+                              isThisMessage &&
+                                  playback.status ==
+                                      MessageReadAloudStatus.preparing
+                              ? null
+                              : () {
+                                  Navigator.of(sheetContext).pop();
+                                  unawaited(
+                                    sheetRef
+                                        .read(messageReadAloudProvider.notifier)
+                                        .listen(
+                                          messageId: message.id,
+                                          author: messageAuthor ?? 'Agent',
+                                          markdown: message.content,
+                                        ),
+                                  );
+                                },
+                        ),
+                      // Triage: come back to this message later.
+                      _MarkReadUnreadTile(
+                        message: message,
                         channelId: channelId,
-                        messageId: message.id,
-                      );
-                    },
-                  ),
-                ],
-              ],
+                      ),
+                      _FollowThreadTile(message: message),
+                      const SheetDivider(),
+                      // Export: take the content out of the conversation.
+                      ListTile(
+                        leading: const Icon(LucideIcons.copy),
+                        title: const Text('Copy text'),
+                        onTap: () {
+                          Navigator.of(sheetContext).pop();
+                          // Copy to clipboard
+                          final data = ClipboardData(text: message.content);
+                          Clipboard.setData(data);
+                        },
+                      ),
+                    ],
+                    if (canManageMessage) ...[
+                      if (!message.isSystem) const SheetDivider(),
+                      ListTile(
+                        leading: const Icon(LucideIcons.pencil),
+                        title: const Text('Edit message'),
+                        onTap: () {
+                          Navigator.of(sheetContext).pop();
+                          _showEditSheet(
+                            context: context,
+                            ref: ref,
+                            message: message,
+                            channelId: channelId,
+                          );
+                        },
+                      ),
+                      ListTile(
+                        leading: Icon(
+                          LucideIcons.trash2,
+                          color: sheetContext.colors.error,
+                        ),
+                        title: Text(
+                          'Delete message',
+                          style: TextStyle(color: sheetContext.colors.error),
+                        ),
+                        onTap: () {
+                          Navigator.of(sheetContext).pop();
+                          _confirmDelete(
+                            context: context,
+                            ref: ref,
+                            channelId: channelId,
+                            messageId: message.id,
+                          );
+                        },
+                      ),
+                    ],
+                  ],
+                ),
+              ),
             ),
           ),
-        ),
-      ),
+        );
+      },
     ),
   );
 }

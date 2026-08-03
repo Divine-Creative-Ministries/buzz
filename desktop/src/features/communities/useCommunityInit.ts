@@ -31,6 +31,7 @@ import { resetAvatarProfileSync } from "@/features/profile/avatarProfileSync";
 import { resetSidebarRelayConnectionCardState } from "@/features/sidebar/ui/useSidebarRelayConnectionCard";
 import { clearMarkdownNodeCache } from "@/shared/ui/markdown/nodeCache";
 import { resetVideoPlayerState } from "@/shared/ui/videoPlayerState";
+import { stopMessageReadAloud } from "@/features/messages/lib/messageReadAloud";
 
 import {
   initFirstCommunity,
@@ -65,6 +66,7 @@ function resetCommunityState({
   }
   resetSidebarRelayConnectionCardState();
   resetMediaCaches();
+  stopMessageReadAloud();
   resetVideoPlayerState();
   resetRenderScopedReactionHydration();
   clearSearchHitEventCache();
