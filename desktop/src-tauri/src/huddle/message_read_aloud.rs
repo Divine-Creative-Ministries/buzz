@@ -85,6 +85,7 @@ pub async fn speak_message_read_aloud(
             Arc::clone(&cancel_worker),
             &voice_name,
             output_device,
+            None,
         )?;
         pipeline.speak(text)?;
         let started = std::time::Instant::now();

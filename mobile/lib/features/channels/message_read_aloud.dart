@@ -91,6 +91,7 @@ String messageTextForSpeech(String markdown) {
 class MessageReadAloudNotifier extends Notifier<MessageReadAloudState> {
   static const _channel = MethodChannel('buzz/message_read_aloud');
   AppLifecycleListener? _lifecycleListener;
+  bool _disposed = false;
   bool get _isSupported => defaultTargetPlatform == TargetPlatform.iOS;
 
   @override
@@ -99,12 +100,22 @@ class MessageReadAloudNotifier extends Notifier<MessageReadAloudState> {
     _lifecycleListener?.dispose();
     _lifecycleListener = AppLifecycleListener(onPause: stop, onDetach: stop);
     ref.onDispose(() {
+      _disposed = true;
       _lifecycleListener?.dispose();
       _lifecycleListener = null;
       _channel.setMethodCallHandler(null);
       if (_isSupported) unawaited(_channel.invokeMethod<void>('stop'));
     });
     return const MessageReadAloudState();
+  }
+
+  /// Stop playback from a widget dispose path. Route disposal can run inside
+  /// the build phase, where a synchronous provider write is forbidden, so the
+  /// write is deferred to a microtask and skipped if the container is gone.
+  void stopDeferred() {
+    scheduleMicrotask(() {
+      if (!_disposed) stop();
+    });
   }
 
   Future<void> listen({
