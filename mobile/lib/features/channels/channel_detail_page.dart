@@ -261,7 +261,7 @@ class ChannelDetailPage extends HookConsumerWidget {
     final readAloudNotifier = ref.read(messageReadAloudProvider.notifier);
     useEffect(
       () =>
-          () => readAloudNotifier.stop(),
+          () => readAloudNotifier.stopDeferred(),
       [channel.id, readAloudNotifier],
     );
 
