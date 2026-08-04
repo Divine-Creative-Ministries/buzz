@@ -9,6 +9,7 @@ Buzz fork without losing local work when the upstream project changes.
 | --- | --- |
 | `block/buzz` (`upstream`) | Official Buzz source and destination for generally useful contributions |
 | `Divine-Creative-Ministries/buzz` (`origin`) | Divine Creative fork |
+| `Divine-Creative-Ministries/buzz-dcm-publish` | Private, source-free mobile and desktop signing/publishing automation |
 | `main` | Exact, fast-forward-only mirror of `upstream/main`; no Divine Creative commits |
 | `dcm-production` | Long-lived integration branch for reviewed Divine Creative changes |
 | `agent/*` | Short-lived implementation or upstream-sync branches targeting `dcm-production` |
@@ -130,6 +131,35 @@ Official references:
 - [TestFlight overview](https://developer.apple.com/help/app-store-connect/test-a-beta-version/testflight-overview)
 - [Apple Developer Program renewal](https://developer.apple.com/help/account/membership/renewal)
 
+## Customized Android App Distribution
+
+The required production distribution method for Divine Creative's customized
+Buzz Android app is a **Managed Google Play private app**:
+
+1. Keep the app in the verified Divine Creative Ministries organization Google
+   Play developer account owned by `hello@divinecreative.org`.
+2. Keep the permanent package name `org.divinecreative.buzz`.
+3. Restrict Managed Google Play availability to the Divine Creative Google
+   organization and assign the app only to approved team users or device
+   groups.
+4. Use Google Play's internal-testing track to validate signed release
+   candidates before promoting an approved build to the private production
+   channel.
+5. Keep the Play App Signing key under Google's protection and keep the upload
+   key and automated-publishing credential outside the repository.
+
+Internal App Sharing links are temporary delivery aids, not the production
+channel. A public production track or a package owned by a personal developer
+account requires an explicit, documented exception. See
+[DCM_MOBILE_RELEASE.md](DCM_MOBILE_RELEASE.md) for the authoritative DCM store
+identities and release boundary.
+
+Official references:
+
+- [Publish private apps from Play Console](https://support.google.com/work/android/answer/9495634)
+- [Set up an internal test](https://support.google.com/googleplay/android-developer/answer/9845334)
+- [Google Play App Signing](https://support.google.com/googleplay/android-developer/answer/9842756)
+
 ## Deployment Rules
 
 A merge into `dcm-production` is permission to build and automatically deploy
@@ -162,6 +192,15 @@ backup, health-check, and rollback contract is defined in
 
 Secrets, private keys, `.env` contents, backup archives, and production data
 must never be committed to Git or attached to a public pull request.
+
+Mobile and desktop publication is deliberately separate from the VPS deploy.
+After a reviewed production commit is ready for client release, create a signed
+annotated `dcm-vX.Y.Z[-suffix]` tag at that exact commit. The private
+`buzz-dcm-publish` repository fetches that public source ephemerally, verifies
+the GitHub signature and ancestry in `dcm-production`, and publishes only after
+an explicit owner dispatch that repeats the exact source SHA. Signing and store
+credentials live only in that private repository's platform environments;
+agents and this public fork never receive their values.
 
 ## Conflict and Recovery Rules
 

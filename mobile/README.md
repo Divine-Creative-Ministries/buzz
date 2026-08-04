@@ -22,9 +22,9 @@ cd mobile && flutter run
 ### Worktree-aware debug identity
 
 Debug builds produced from a git worktree get a unique app identifier keyed
-to the **worktree directory name** (`com.buzz.buzzMobile.<slug>` on iOS,
-`xyz.block.buzz.mobile.<slug>` on Android) plus a display-only branch label
-in the app name (`Buzz (my-branch)`, or a short SHA when the worktree is
+to the **worktree directory name** (`org.divinecreative.buzz.<slug>` on both
+iOS and Android) plus a display-only branch label in the app name
+(`DCM Buzz (my-branch)`, or a short SHA when the worktree is
 detached). Because the identifier follows the directory rather than the
 branch, one worktree keeps exactly one installed app — and its login state —
 across branch switches, and builds from multiple worktrees install side by
@@ -62,6 +62,32 @@ flutter test
 ```
 
 Or from the repo root: `just mobile-check` and `just mobile-test`.
+
+## Divine Creative store releases
+
+Agents and operators releasing the Divine Creative fork must follow
+[`docs/DCM_MOBILE_RELEASE.md`](../docs/DCM_MOBILE_RELEASE.md). The required
+sequence is TestFlight internal testing for iOS and Google Play internal
+testing for Android, real-device validation of the same signed candidate, then
+an explicitly approved promotion to the Private Custom App and Managed Google
+Play private production channels. A merge to `dcm-production` does not publish
+either mobile app.
+
+The protected test-lane upload lives in the private
+`Divine-Creative-Ministries/buzz-dcm-publish` repository. Its
+`publish-mobile.yml` workflow accepts an existing signed annotated
+`dcm-vX.Y.Z[-suffix]` tag and its exact SHA, verifies that the SHA belongs to
+this fork's `dcm-production` history, and only then enters separate `dcm-ios`
+and `dcm-android` environments. This public source fork has no mobile signing
+or store secrets, and Buzz agents have no signing or store environment
+variables.
+
+The configured TestFlight group is `DCM Internal Testing`. Google Play uploads
+use the dedicated `DCM Buzz Mobile Publisher` service account, scoped only to
+this app and testing-track releases. The approved Android upload-key alias is
+`dcm-buzz-upload`. Credential values remain in the private publisher's
+protected GitHub environments and approved Mac login Keychain entries described
+in the release document.
 
 ## Android release signing
 

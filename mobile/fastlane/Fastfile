@@ -1,0 +1,89 @@
+default_platform(:ios)
+
+DCM_IOS_BUNDLE_ID = "org.divinecreative.buzz"
+DCM_ANDROID_PACKAGE = "org.divinecreative.buzz"
+
+def required_env(name)
+  value = ENV[name]
+  UI.user_error!("#{name} is required") if value.nil? || value.empty?
+  value
+end
+
+def required_file(name)
+  path = required_env(name)
+  UI.user_error!("#{name} does not name a readable file") unless File.file?(path) && File.readable?(path)
+  path
+end
+
+def app_store_api_key
+  app_store_connect_api_key(
+    key_id: required_env("DCM_ASC_KEY_ID"),
+    issuer_id: required_env("DCM_ASC_ISSUER_ID"),
+    key_filepath: required_file("DCM_ASC_PRIVATE_KEY_PATH"),
+    duration: 1_200,
+    in_house: false
+  )
+end
+
+platform :ios do
+  desc "Reject a reused TestFlight build number before signing"
+  lane :verify_internal_build_number do
+    desired = Integer(required_env("DCM_IOS_BUILD_NUMBER"), 10)
+    latest = latest_testflight_build_number(
+      api_key: app_store_api_key,
+      app_identifier: DCM_IOS_BUNDLE_ID,
+      version: required_env("DCM_MOBILE_VERSION"),
+      initial_build_number: 0
+    )
+    UI.user_error!("iOS build #{desired} is not greater than existing build #{latest}") unless desired > latest
+  end
+
+  desc "Upload the exact DCM IPA to TestFlight internal testing"
+  lane :internal do
+    upload_to_testflight(
+      api_key: app_store_api_key,
+      ipa: required_file("DCM_IOS_IPA_PATH"),
+      app_identifier: DCM_IOS_BUNDLE_ID,
+      groups: [required_env("DCM_TESTFLIGHT_INTERNAL_GROUP")],
+      distribute_external: false,
+      # fastlane defaults submit_beta_review to true whenever groups are set,
+      # which would send every internal candidate to Apple Beta App Review.
+      # The DCM release contract submits to review only at explicit promotion.
+      submit_beta_review: false,
+      skip_waiting_for_build_processing: false,
+      changelog: required_env("DCM_TESTFLIGHT_CHANGELOG")
+    )
+  end
+end
+
+platform :android do
+  desc "Reject a reused Google Play version code before signing"
+  lane :verify_internal_version_code do
+    desired = Integer(required_env("DCM_ANDROID_VERSION_CODE"), 10)
+    existing = %w[internal alpha beta production].flat_map do |track|
+      google_play_track_version_codes(
+        package_name: DCM_ANDROID_PACKAGE,
+        track: track,
+        json_key: required_file("DCM_GOOGLE_PLAY_JSON_PATH")
+      )
+    end
+    latest = existing.map(&:to_i).max || 0
+    UI.user_error!("Android version code #{desired} is not greater than existing code #{latest}") unless desired > latest
+  end
+
+  desc "Upload the exact DCM AAB to Google Play internal testing"
+  lane :internal do
+    upload_to_play_store(
+      aab: required_file("DCM_ANDROID_AAB_PATH"),
+      package_name: DCM_ANDROID_PACKAGE,
+      track: "internal",
+      release_status: "completed",
+      json_key: required_file("DCM_GOOGLE_PLAY_JSON_PATH"),
+      skip_upload_metadata: true,
+      skip_upload_changelogs: true,
+      skip_upload_images: true,
+      skip_upload_screenshots: true,
+      timeout: 600
+    )
+  end
+end
