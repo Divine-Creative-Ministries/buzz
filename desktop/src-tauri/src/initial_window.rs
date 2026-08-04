@@ -1,6 +1,4 @@
-//! First-reveal choreography for the main window: keep it hidden (with an
-//! opaque backing on macOS) until the initial render is ready and the
-//! window-state plugin has settled restored geometry, then show and focus.
+//! First-frame window reveal helpers.
 
 #[cfg(target_os = "macos")]
 pub(crate) const INITIAL_RENDER_READY_EVENT: &str = "initial-render-ready";
@@ -46,10 +44,7 @@ pub(crate) async fn wait_for_stable_initial_window_geometry<R: tauri::Runtime>(
     for _ in 0..MAX_POLLS {
         // Accept whatever geometry the window-state plugin restores — maximized
         // or a normal saved size. macOS applies the restore asynchronously, so
-        // we only need consecutive identical outer bounds to know it settled.
-        // Gating on `is_maximized()` here would leave `bounds` permanently
-        // `None` for restored non-maximized windows and stall the reveal until
-        // the poll timeout.
+        // consecutive identical outer bounds are enough to know it settled.
         let bounds = match (window.outer_position(), window.outer_size()) {
             (Ok(position), Ok(size)) => Some((position.x, position.y, size.width, size.height)),
             _ => None,
