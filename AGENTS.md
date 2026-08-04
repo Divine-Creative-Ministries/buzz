@@ -60,6 +60,10 @@ releasing, or deploying, read
   production data. A merge to `dcm-production` authorizes application image
   deployment only; it does not authorize unrelated infrastructure changes or
   replacement of the root-owned deployment trust boundary.
+- Preserve the DCM application branding defined in
+  [docs/DCM_BRANDING.md](docs/DCM_BRANDING.md). The canonical app-icon artwork
+  is `docs/brand/dcm-buzz-app-icon.png`; mobile, desktop, web, and admin icon
+  files are generated derivatives and must be updated together.
 - If the requested action would violate these rules, or the repository/branch
   state is ambiguous, stop and ask for direction instead of guessing.
 
