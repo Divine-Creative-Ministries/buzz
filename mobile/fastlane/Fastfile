@@ -46,6 +46,10 @@ platform :ios do
       app_identifier: DCM_IOS_BUNDLE_ID,
       groups: [required_env("DCM_TESTFLIGHT_INTERNAL_GROUP")],
       distribute_external: false,
+      # fastlane defaults submit_beta_review to true whenever groups are set,
+      # which would send every internal candidate to Apple Beta App Review.
+      # The DCM release contract submits to review only at explicit promotion.
+      submit_beta_review: false,
       skip_waiting_for_build_processing: false,
       changelog: required_env("DCM_TESTFLIGHT_CHANGELOG")
     )
