@@ -27,6 +27,7 @@ mod agent_tts_routing;
 pub mod agent_voice;
 pub mod agents;
 pub mod audio_output;
+mod channel_name;
 mod commands;
 pub mod jitter;
 pub mod message_read_aloud;
@@ -89,6 +90,7 @@ use agent_tts_routing::{
     classify_agent_tts_runtime, enqueue_agent_tts_text, normalize_agent_tts_text,
     AgentTtsRuntimeGate,
 };
+use channel_name::normalize_huddle_channel_name;
 pub use pipeline::check_pipeline_hotstart;
 use pipeline::{
     await_inflight_tts_start, maybe_start_stt_pipeline, maybe_start_tts_pipeline,
@@ -99,22 +101,6 @@ use relay_api::{
     MAX_HUDDLE_AGENTS,
 };
 use window::close_huddle_window;
-
-fn normalize_huddle_channel_name(candidate: Option<String>, fallback: &str) -> String {
-    let normalized = candidate
-        .unwrap_or_default()
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ");
-
-    let name = if normalized.is_empty() {
-        fallback
-    } else {
-        normalized.as_str()
-    };
-
-    name.chars().take(80).collect()
-}
 
 // ── Tauri commands ────────────────────────────────────────────────────────────
 
