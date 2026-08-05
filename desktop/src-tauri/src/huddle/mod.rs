@@ -27,6 +27,8 @@ mod agent_tts_routing;
 pub mod agent_voice;
 pub mod agents;
 pub mod audio_output;
+mod channel_name;
+mod commands;
 pub mod jitter;
 pub mod message_read_aloud;
 pub mod models;
@@ -68,6 +70,9 @@ pub(super) fn drain_until_shutdown<T>(
 
 // ── Re-exports ────────────────────────────────────────────────────────────────
 
+pub use commands::{
+    interrupt_huddle_speech, remove_agent_from_huddle, set_huddle_manual_mic_unmuted,
+};
 pub use state::{HuddleJoinInfo, HuddlePhase, HuddleState, VoiceInputMode};
 pub use transcription::{set_huddle_transcription_enabled, start_stt_pipeline};
 pub use tts_settings::set_tts_enabled;
@@ -85,6 +90,7 @@ use agent_tts_routing::{
     classify_agent_tts_runtime, enqueue_agent_tts_text, normalize_agent_tts_text,
     AgentTtsRuntimeGate,
 };
+use channel_name::normalize_huddle_channel_name;
 pub use pipeline::check_pipeline_hotstart;
 use pipeline::{
     await_inflight_tts_start, maybe_start_stt_pipeline, maybe_start_tts_pipeline,
@@ -95,22 +101,6 @@ use relay_api::{
     MAX_HUDDLE_AGENTS,
 };
 use window::close_huddle_window;
-
-fn normalize_huddle_channel_name(candidate: Option<String>, fallback: &str) -> String {
-    let normalized = candidate
-        .unwrap_or_default()
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ");
-
-    let name = if normalized.is_empty() {
-        fallback
-    } else {
-        normalized.as_str()
-    };
-
-    name.chars().take(80).collect()
-}
 
 // ── Tauri commands ────────────────────────────────────────────────────────────
 
@@ -869,11 +859,27 @@ pub async fn speak_agent_message(
 
     let sender = {
         let hs = state.huddle()?;
+        let agent_is_present = hs
+            .agent_pubkeys
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .iter()
+            .any(|pubkey| pubkey.eq_ignore_ascii_case(&speaker_pubkey));
+        if !agent_is_present {
+            eprintln!(
+                "buzz-desktop: tts stage=queue status=dropped reason=speaker_removed route_id={route_id}"
+            );
+            return Ok(());
+        }
         hs.tts_pipeline
             .as_ref()
             .map(|pipeline| pipeline.text_sender())
+            .map(|sender| {
+                let speaker_generation = sender.speaker_generation(&speaker_pubkey);
+                (sender, speaker_generation)
+            })
     };
-    let Some(sender) = sender else {
+    let Some((sender, speaker_generation)) = sender else {
         eprintln!(
             "buzz-desktop: tts stage=invoke status=failed reason=unavailable route_id={route_id}"
         );
@@ -881,7 +887,13 @@ pub async fn speak_agent_message(
     };
     enqueue_agent_tts_text(route_id, text, move |route_id, text| {
         sender
-            .send(route_id, speaker_pubkey, voice_reference, text)
+            .send(
+                route_id,
+                speaker_pubkey,
+                speaker_generation,
+                voice_reference,
+                text,
+            )
             .map_err(|error| format!("TTS queue closed while waiting to enqueue: {error}"))
     })
     .await
