@@ -64,6 +64,22 @@ class _MessageBubble extends ConsumerWidget {
       agentMentionPubkeys: agentMentionPubkeys,
     );
 
+    void openMessageActions(Rect anchorRect) {
+      showMessageActions(
+        context: context,
+        ref: ref,
+        message: message,
+        channelId: currentChannelId,
+        canManageMessage: canManageMessage,
+        messageAuthor: displayName,
+        allMessages: allMessages,
+        currentPubkey: currentPubkey,
+        isMember: isMember,
+        isArchived: isArchived,
+        anchorRect: anchorRect,
+      );
+    }
+
     return Padding(
       padding: EdgeInsets.only(top: showAuthor ? Grid.xs : 0),
       child: Material(
@@ -73,8 +89,9 @@ class _MessageBubble extends ConsumerWidget {
         // gutter. InkWell still clips its ink to [borderRadius], while leaving
         // overflowing message content visible.
         clipBehavior: Clip.none,
-        child: InkWell(
+        child: MessageLongPressInkWell(
           key: ValueKey('message-row-${message.id}'),
+          onLongPress: openMessageActions,
           borderRadius: BorderRadius.circular(Radii.md),
           highlightColor: context.colors.primary.withValues(alpha: 0.1),
           // Tap opens the thread; long-press still opens the action sheet.
@@ -93,18 +110,6 @@ class _MessageBubble extends ConsumerWidget {
                     ),
                   ),
                 ),
-          onLongPress: () => showMessageActions(
-            context: context,
-            ref: ref,
-            message: message,
-            channelId: currentChannelId,
-            canManageMessage: canManageMessage,
-            messageAuthor: displayName,
-            allMessages: allMessages,
-            currentPubkey: currentPubkey,
-            isMember: isMember,
-            isArchived: isArchived,
-          ),
           child: Padding(
             padding: EdgeInsets.only(
               top: showAuthor ? 0 : Grid.xxs,

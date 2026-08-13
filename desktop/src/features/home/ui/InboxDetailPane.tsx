@@ -29,8 +29,12 @@ import { formatTime } from "@/features/messages/lib/dateFormatters";
 import {
   hasSameMessageAuthor,
   isWithinGroupingWindow,
+  startsNewMessageGroup,
 } from "@/features/messages/lib/messageGrouping";
 import { orderMentionPubkeysByText } from "@/features/messages/lib/orderMentionPubkeys";
+import { canManageMessageForCurrentUser } from "@/features/messages/lib/canManageMessage";
+import { buildEditMentionState } from "@/features/messages/lib/draftMentionRefs";
+import { imetaMediaFromTags } from "@/features/messages/lib/imetaMediaMarkdown";
 import { getThreadReference } from "@/features/messages/lib/threading";
 import { normalizePubkey } from "@/shared/lib/pubkey";
 import { MessageComposer } from "@/features/messages/ui/MessageComposer";
@@ -68,7 +72,9 @@ type InboxDetailPaneProps = {
   canReply: boolean;
   disabledReplyReason?: string | null;
   isDeletingMessage?: boolean;
+  isEditingMessage?: boolean;
   isSendingReply?: boolean;
+  editTargetId: string | null;
   isSinglePanelView?: boolean;
   hasThreadContextLoadError?: boolean;
   isThreadContextLoading?: boolean;
@@ -97,6 +103,14 @@ type InboxDetailPaneProps = {
   latchedDefaultParentId?: string | null;
   onBack?: () => void;
   onDelete: () => void;
+  onEditTargetChange: React.Dispatch<React.SetStateAction<string | null>>;
+  onEditSave: (input: {
+    content: string;
+    eventId: string;
+    mediaTags?: string[][];
+    mentionPubkeys?: string[];
+  }) => Promise<void>;
+  onRequestEmptyEditDelete: (eventId: string) => void;
   onManageChannel: (channelId: string) => void;
   onOpenContext: (
     channelId: string,
@@ -138,7 +152,9 @@ function InboxMessageDetailPane({
   canOpenChannel,
   canReply,
   disabledReplyReason,
+  editTargetId,
   isDeletingMessage = false,
+  isEditingMessage = false,
   isSendingReply = false,
   isSinglePanelView = false,
   hasThreadContextLoadError = false,
@@ -155,6 +171,9 @@ function InboxMessageDetailPane({
   latchedDefaultParentId = null,
   onBack,
   onDelete,
+  onEditTargetChange,
+  onEditSave,
+  onRequestEmptyEditDelete,
   onManageChannel,
   onOpenContext,
   onSendReply,
@@ -383,6 +402,25 @@ function InboxMessageDetailPane({
 
   const replyTarget =
     displayMessages.find((message) => message.id === replyTargetId) ?? null;
+  const editTarget =
+    displayMessages.find((message) => message.id === editTargetId) ?? null;
+  const editMentionState = editTarget
+    ? buildEditMentionState(
+        editTarget.content,
+        editTarget.tags,
+        profiles,
+        (pubkey) => agentPubkeys?.has(pubkey) === true,
+      )
+    : null;
+  const composerEditTarget = editTarget
+    ? {
+        author: editTarget.authorLabel,
+        body: editTarget.content,
+        id: editTarget.id,
+        imetaMedia: imetaMediaFromTags(editTarget.tags),
+        ...editMentionState,
+      }
+    : null;
   // Explicit sub-message reply wins. Otherwise use the captured default parent
   // (derived from the selected-event anchor at conversation entry), which does
   // not change when a live incoming message advances the representative item.
@@ -430,6 +468,14 @@ function InboxMessageDetailPane({
     setReplyTargetId((currentReplyTargetId) =>
       currentReplyTargetId === message.id ? null : message.id,
     );
+    onEditTargetChange(null);
+    focusComposer();
+  };
+  const handleSelectEditTarget = (message: InboxDisplayMessage) => {
+    onEditTargetChange((currentEditTargetId) =>
+      currentEditTargetId === message.id ? null : message.id,
+    );
+    setReplyTargetId(null);
     focusComposer();
   };
 
@@ -580,6 +626,7 @@ function InboxMessageDetailPane({
               const previousMessage = displayMessages[index - 1];
               const isContinuation =
                 !isAfterSeparator &&
+                !startsNewMessageGroup(message) &&
                 hasSameMessageAuthor(
                   { pubkey: previousMessage?.authorPubkey },
                   { pubkey: message.authorPubkey },
@@ -588,6 +635,24 @@ function InboxMessageDetailPane({
                   previousMessage?.createdAt,
                   message.createdAt,
                 );
+
+              const canManageMessage = canManageMessageForCurrentUser(
+                {
+                  id: message.id,
+                  author: message.authorLabel,
+                  body: message.content,
+                  createdAt: message.createdAt,
+                  depth: message.depth,
+                  kind: message.kind,
+                  pubkey: message.authorPubkey,
+                  time: message.timeLabel ?? message.fullTimestampLabel,
+                },
+                currentPubkey,
+                profiles,
+              );
+
+              const canEditMessage =
+                channel?.archivedAt === null && canManageMessage;
 
               return (
                 <InboxMessageRow
@@ -599,6 +664,7 @@ function InboxMessageDetailPane({
                   isFocusHighlightVisible={isFocusHighlightVisible}
                   key={message.id}
                   message={message}
+                  onEdit={canEditMessage ? handleSelectEditTarget : undefined}
                   onSelectReplyTarget={handleSelectReplyTarget}
                   onToggleReaction={onToggleReaction}
                   showUnreadBoundary={hasUnreadBoundary}
@@ -649,16 +715,41 @@ function InboxMessageDetailPane({
               channelName={item.channelLabel ?? "channel"}
               channelType={composerChannelType}
               containerClassName="px-4 pb-4 sm:px-4"
-              disabled={!canReply}
+              disabled={!canReply && !composerEditTarget}
               draftKey={
                 isDirectMessage
                   ? (item.item.channelId ?? item.conversationId)
                   : `thread:${item.conversationId}`
               }
-              isSending={isSendingReply}
+              editTarget={composerEditTarget}
+              isSending={isSendingReply || isEditingMessage}
+              onCancelEdit={
+                composerEditTarget ? () => onEditTargetChange(null) : undefined
+              }
               onCancelReply={
                 composerReplyTarget ? () => setReplyTargetId(null) : undefined
               }
+              onEditSave={async (content, mediaTags, mentionPubkeys) => {
+                if (!composerEditTarget) {
+                  return;
+                }
+                // Empty edits are delete shorthand. Keep edit mode active while
+                // confirmation is open so Cancel returns to the editor.
+                const isEmptyDeletion =
+                  content.trim().length === 0 &&
+                  (mediaTags === undefined || mediaTags.length === 0);
+                if (isEmptyDeletion) {
+                  onRequestEmptyEditDelete(composerEditTarget.id);
+                  return;
+                }
+                await onEditSave({
+                  content,
+                  eventId: composerEditTarget.id,
+                  mediaTags,
+                  mentionPubkeys,
+                });
+                onEditTargetChange(null);
+              }}
               onSend={(content, mentionPubkeys, mediaTags) =>
                 onSendReply({
                   content,

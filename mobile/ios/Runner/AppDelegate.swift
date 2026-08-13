@@ -10,6 +10,7 @@ import UserNotifications
   private var mediaUploadChannel: FlutterMethodChannel?
   private var qrScannerChannel: FlutterMethodChannel?
   private var inlinePhotoPickerSupportChannel: FlutterMethodChannel?
+  private var concentricSheetSurfaceChannel: FlutterMethodChannel?
   private var nativeAttachmentPopoverCoordinator: NativeAttachmentPopoverCoordinator?
   private var messageReadAloudChannel: FlutterMethodChannel?
   private let messageSpeechSynthesizer = AVSpeechSynthesizer()
@@ -75,6 +76,30 @@ import UserNotifications
         ),
         withId: "buzz/inline_photo_picker"
       )
+    }
+
+    if let concentricSheetRegistrar = engineBridge.pluginRegistry.registrar(
+      forPlugin: "BuzzConcentricSheetSurface"
+    ) {
+      concentricSheetRegistrar.register(
+        ConcentricSheetSurfaceFactory(),
+        withId: "buzz/concentric_sheet_surface"
+      )
+      concentricSheetSurfaceChannel = FlutterMethodChannel(
+        name: "buzz/concentric_sheet_surface",
+        binaryMessenger: messenger
+      )
+      concentricSheetSurfaceChannel?.setMethodCallHandler { call, result in
+        guard call.method == "isSupported" else {
+          result(FlutterMethodNotImplemented)
+          return
+        }
+        if #available(iOS 26.0, *) {
+          result(true)
+        } else {
+          result(false)
+        }
+      }
     }
 
     let nativeAttachmentRegistrar = engineBridge.pluginRegistry.registrar(
